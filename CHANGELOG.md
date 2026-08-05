@@ -6,6 +6,20 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ### Fixed
 
+- **Versioned documentation never deployed: the `Documentation` workflow raced
+  itself on every release.** A release pushes `main` and the version tag in one
+  `git push`, firing two workflow runs simultaneously. The concurrency group was
+  keyed on `github.ref`, so a branch run and a tag run landed in *different*
+  groups, built docs in parallel, and both tried to push `gh-pages`. The loser
+  died with `! [rejected] HEAD -> gh-pages (fetch first)` and that release's
+  versioned docs were never published — `gh-pages` held only `dev/`, and
+  `/v0.1.0/` and `/v0.1.1/` were 404 on the published site.
+
+  The group no longer includes the ref and no longer cancels in progress, so the
+  tag run queues behind the branch run and clones a `gh-pages` that already
+  contains it. Doc builds serialise instead of overlapping, costing about a
+  minute and a half of queueing per release.
+
 - **Unit commitment was broken with Gurobi 13: `GurobiSolverConfig.optimality_target`
   now defaults to `-1` instead of `1`.** `apply_gurobi_options!` stamps
   `OptimalityTarget` onto every Gurobi model. Gurobi 13 renumbered that parameter —

@@ -8,9 +8,15 @@ on:
     tags: ['*']
   pull_request:
 
+# Serialised deliberately, NOT keyed on github.ref. A release pushes main and the
+# version tag together, which fires two runs at once; keyed on the ref they do not
+# share a group, so both build docs and both race to push gh-pages. The loser dies
+# with "! [rejected] HEAD -> gh-pages (fetch first)" and that version's docs never
+# deploy. One group + no cancellation makes the tag run queue behind the main run
+# and clone a gh-pages that already contains it.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   build:
