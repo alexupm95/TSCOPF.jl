@@ -260,7 +260,6 @@ const cfg = RunConfig(
     save_matrices           = true,
     save_ts_plots           = false,  # true also needs Plots + load_plots_extension!
     save_warmstart_dispatch = true,
-    use_acopf_warmstart     = true,
 
     # Nested avenues
     dispatch  = dispatch_cfg,
@@ -312,8 +311,7 @@ Every table below lists **all** fields of the struct. "Default" is the value in 
 | `save_optim_matrices` | `Bool` | `false` | Steady-state only; `resolve_save_optim_matrices` forces `false` on TSC paths |
 | `save_matrices` | `Bool` | `true` | Ybus / Bbus / Kron matrices to `Bus_Matrices/` |
 | `save_ts_plots` | `Bool` | `false` | SVG trajectories. `true` without Plots loaded raises at validation |
-| `save_warmstart_dispatch` | `Bool` | `false` | Archives the pre-TS ACOPF. Requires TSC + ACOPF + FULL_BUS + warm start |
-| `use_acopf_warmstart` | `Bool` | `true` | `false` substitutes `build_flat_start_hints`. Only settable on TSC + ACOPF + FULL_BUS |
+| `save_warmstart_dispatch` | `Bool` | `false` | Archives the steady-state pre-solve. Requires TSC + (ACOPF + FULL_BUS) or (DCOPF + Kron) |
 | `dispatch` | `DispatchConfig` | `DispatchConfig()` | Avenue 1 |
 | `transient` | `TransientConfig` or `nothing` | `nothing` | Avenue 2 |
 | `matpower_file` | `String` or `nothing` | `nothing` | Filename relative to the case folder, or an absolute path. Dynamic and contingency CSVs are still read from the case folder |
@@ -494,8 +492,9 @@ Each of these raises an `ArgumentError` before any variable is created. The chec
 | `trans_stab = true`, `transient = nothing` | `validate_run_config!` | `trans_stab=true requires transient::TransientConfig.` |
 | `trans_stab = false`, `transient` set | `validate_run_config!` | `trans_stab=false requires transient=nothing.` |
 | `save_ts_plots = true` without Plots loaded | `validate_run_config!` | `save_ts_plots=true requires Plots.jl in the active environment …` |
-| `save_warmstart_dispatch = true` outside TSC + ACOPF + FULL_BUS + warm start | `validate_run_config!` | `save_warmstart_dispatch=true requires trans_stab=true, dispatch.type_model="ACOPF" …` |
-| `use_acopf_warmstart = false` outside TSC + ACOPF + FULL_BUS | `validate_run_config!` | `use_acopf_warmstart=false requires trans_stab=true …` |
+| `save_warmstart_dispatch = true` on a run with no steady-state pre-solve | `validate_run_config!` | `save_warmstart_dispatch=true requires a TSC run with a steady-state pre-solve …` |
+| `FULL_BUS` with `mech_power_mode = USE_PG` | `validate_dyn_config!` | `network_form=FULL_BUS requires mech_power_mode=USE_PM …` |
+| `KRON_REDUCED` with `ode_first_step = :backward_euler` | `validate_dyn_config!` | `ode_first_step=:backward_euler is not implemented on network_form=KRON_REDUCED …` |
 | Unknown `type_model` or `cost_type` | `validate_dispatch_config!` | `Unknown type_model "…"` |
 | `type_model = "UC"` with quadratic cost | `validate_dispatch_config!` | `UC requires cost_type="linear" (MILP).` |
 | `solve_explicit_dual = true` outside ED/DCOPF, or with quadratic cost, or DCOPF without `use_matrix` | `validate_dispatch_config!` | `solve_explicit_dual=true requires type_model="DCOPF" or "ED".` |

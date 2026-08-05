@@ -65,13 +65,15 @@ function Make_Dynamic_Model_fullbus!(
     zip_load_q::NTuple{3, Float64}=(1.0, 0.0, 0.0),
     include_governor::Bool=false,
     governor_limiter::GovernorLimiter=GOV_NO_LIMIT,
+    ode_first_step::Symbol=:trapezoidal,
     steady_state_hints::SteadyStateHints,
-    coupling_init_source::CouplingInitSource=:acopf_warmstart,
 )
     mech_power_mode == USE_PM || throw(ArgumentError(
         "FULL_BUS classical path currently requires mech_power_mode=USE_PM."))
     include_governor && mech_power_mode != USE_PM && throw(ArgumentError(
         "include_governor requires mech_power_mode=USE_PM."))
+    ode_first_step ∈ (:trapezoidal, :backward_euler) || throw(ArgumentError(
+        "ode_first_step must be :trapezoidal or :backward_euler (got $ode_first_step)."))
 
     # `ts_input_param` holds the per-family toggles (var names, which bounds/eq-constraints
     # to emit) decoded from the builder config. ZIP_P / ZIP_Q are the (Z, I, P) load
@@ -89,7 +91,8 @@ function Make_Dynamic_Model_fullbus!(
         :constrain_Δω_COI => constrain_Δω_COI,
         :Δω_tol => Δω_tol,
         :network_form => "FULL_BUS",
-        :coupling_init_source => coupling_init_source_label(coupling_init_source),
+        :coupling_init_source => "acopf_warmstart",   # the only FULL_BUS coupling path
+        :ode_first_step => ode_first_step,
         :ineq_cons => ts_input_param[:ineq_cons],
         :var_bounds => ts_input_param[:var_bounds],
         :bound_encoding => bound_encoding_from_param(ts_input_param),
@@ -496,9 +499,9 @@ function Define_Fault_Dynamic_Model_fullbus!(
     attach_fault_tf_var_bounds!(model, dyn_model_dict)
 
     # δ-COI stability bounds (flavour set by `bound_style`).
-    _add_fullbus_δ_COI_bounds_fault!(
+    _add_δ_COI_bounds_fault!(
         model, dyn_model_dict, active_gen, DGEN_DYN, P_mech, δ_tf, δCOI_tf,
-        Δω_tf, Pe_tf, time_window, δ_tol, δ_0, Δω_0, P_g, ω_syn, Δt)
+        Δω_tf, Pe_tf, time_window, δ_tol, δ_0, Δω_0, ω_syn, Δt)
 
     # Optional speed-deviation COI bounds (|Δω_g − Δω_COI| ≤ tol).
     if get(dyn_model_dict[:meta], :constrain_Δω_COI, false)
@@ -642,7 +645,7 @@ function Define_PostFault_Dynamic_Model_fullbus!(
 
     attach_postfault_tpf_var_bounds!(model, dyn_model_dict)
 
-    _add_fullbus_δ_COI_bounds_postf!(
+    _add_δ_COI_bounds_postf!(
         model, dyn_model_dict, active_gen, DGEN_DYN, P_mech, δ_tpf, δCOI_tpf,
         Δω_tpf, Pe_tpf, time_window, δ_tol, δ_ant, Δω_ant, Pe_ant, ω_syn, Δt)
 

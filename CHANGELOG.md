@@ -4,7 +4,66 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Breaking
+
+- **`RunConfig.use_acopf_warmstart` is removed.** Its only legal value was already
+  determined by `network_form`: FULL_BUS TSC-ACOPF must pre-solve the steady-state
+  ACOPF that seeds every coupling variable, and no other path pre-solves at all.
+  The flat-start alternative (`build_flat_start_hints`, `CouplingInitSource`,
+  `coupling_init_source_label`) is removed with it — on FULL_BUS a flat guess
+  leaves the joint NLP far from any equilibrium, and a failed pre-solve now aborts
+  the run instead of silently falling back. Delete the field from any call site;
+  passing it raises a `MethodError`.
+
+- **Two configurations that used to be accepted and ignored now throw**, both from
+  `validate_dyn_config!`, before any model is built:
+  `network_form = FULL_BUS` with `mech_power_mode = USE_PG` (previously thrown by
+  the builder, but only *after* the warm-start ACOPF had been solved), and
+  `network_form = KRON_REDUCED` with `ode_first_step = :backward_euler`.
+
+- **`bound_style` now changes the model on the Kron paths.** A Kron run configured
+  with `:coi_box` used to build the swing-propagated constraint regardless. Runs
+  that declared `:coi_box` on Kron (including every `USE_PM` run, since `USE_PM`
+  forces that value) will produce different numbers — the ones the configuration
+  always claimed. To keep the old model, say `:swing_propagated` explicitly.
+
+### Added
+
+- **`save_warmstart_dispatch` covers TSC-DCOPF.** The DC pre-solve that fixes the
+  Taylor anchor `δ_ref` is a genuine pre-solve, and its dispatch was discarded.
+  It now writes the same reports as the FULL_BUS warm start to
+  `Dispatch_WarmStart/`, plus `CSV/delta_ref.csv` (`gen; delta_ref_rad;
+  delta_ref_deg`) — nothing else in the results tree records the point every
+  linearised `Pe` row expands around.
+
+- **`ode_first_step` reaches classical FULL_BUS.** The equation builders already
+  branched on `t == 1`; only `ClassicalFullBusModel` lacked the field, so a
+  CLASSICAL_2ND FULL_BUS run silently integrated trapezoidally whatever was asked
+  for. Backward Euler now reaches its swing rows and, with `include_governor`, the
+  TGOV1 rows too. DQ_4TH is unchanged; Kron rejects the value (see above).
+
 ### Fixed
+
+- **`Dispatch_WarmStart/` was created on paths that never warm-start.** The
+  pre-fault coupling snapshot was gated on a `coupling_init_source` local that
+  defaulted to `:acopf_warmstart` and was only corrected inside the FULL_BUS
+  branch, so Kron TSC-ACOPF and TSC-DCOPF runs got a folder holding
+  `prefault_coupling_starts.{txt,csv}` with `delta_rad = 0` and `E = 1` — the
+  constants `var_kron_gen_rotor_angle!` seeds, not an operating point. The
+  snapshot is now written only where the starts came from a solved ACOPF.
+
+- **`bound_style` was recorded and ignored on Kron.** Both Kron builders called
+  `ineq_const_kron_δ_COI_generic_modified!` unconditionally while `meta` (and
+  `dynamic_model_details.txt`) reported whatever was configured. The `:coi_box` /
+  `:swing_propagated` dispatch moved next to the two constraint families it
+  chooses between (`functions_4_TS_kron_ineqconst.jl`), and all four network paths
+  now route through it.
+
+- **`dynamic_model_details.txt` no longer interrupts its constraint listing with
+  configuration lines.** `bound_style`, `ode_first_step` and the ZIP splits are
+  printed once by `_export_dyn_meta_header` at the top of the file, on every path,
+  instead of appearing between the shared constraint block and the FULL_BUS
+  network block.
 
 - **Versioned documentation never deployed: the `Documentation` workflow raced
   itself on every release.** A release pushes `main` and the version tag in one

@@ -52,8 +52,7 @@ Shared knobs for dispatch-only and TSC runs. Does **not** carry `type_model`, `�
 | Admittance XLSX dumps | `save_matrices` | `true` | Steady-state Ybus/Bbus (ACOPF/DCOPF only; not ED/UC). TSC fault/post-fault matrices always when `trans_stab=true`. |
 | TSC trajectory figures | `save_ts_plots` | `false` | `Transient_Stability/Figures/` (Plots.jl); requires `trans_stab=true` |
 | TS diagnostic dumps | `save_ts_debug_csv` | `false` | `Transient_Stability/CSV/Debug/`: `gfm_{filter,limiter,voltage}_debug.csv` + `swing_debug.csv`, one row per (window, gen, step) with value, margin and dual |
-| FULL_BUS warm-start dispatch | `save_warmstart_dispatch` | `false` | `Dispatch_WarmStart/` after ACOPF pre-solve when `use_acopf_warmstart=true`; requires `trans_stab=true`, `type_model=ACOPF`, `network_form=FULL_BUS` |
-| FULL_BUS ACOPF pre-solve | `use_acopf_warmstart` | `true` | When `false`, skip pre-solve and flat-start coupling (`V=1`, `θ=0`, `pg_spe`/`qg_spe`); FULL_BUS TSC-ACOPF only |
+| Pre-solve dispatch archive | `save_warmstart_dispatch` | `false` | `Dispatch_WarmStart/` on the two TSC paths that pre-solve a steady-state OPF: FULL_BUS TSC-ACOPF (warm start) and Kron TSC-DCOPF (δ_ref anchor, plus `CSV/delta_ref.csv`). Throws elsewhere. |
 | Steady-state builder config | `dispatch` | `DispatchConfig()` | Avenue 1 |
 | Transient bundle | `transient` | `nothing` | Avenue 2; required when `trans_stab=true` |
 | MATPOWER input file | `matpower_file` | `nothing` | `nothing` = CSV mode (default). Set to `"case9.m"` (relative to case folder) or an absolute path to load steady-state data from a MATPOWER `.m` file instead of the three CSVs. Dynamic data (`gen_dynamic_data.csv`) is always read from the case folder regardless. See §6.1 of the user guide. |
@@ -161,7 +160,7 @@ Pre-fault init equalities (`eq_const_P_init` / `Q_init` / `Pm_init`) and fault/p
 | Allow GFM fleet | `allow_gfm` | `false` | Separate `gfm_dynamic_data.csv`; requires `DQ_4TH` + `FULL_BUS` (G2: full transient GFM) |
 | ZIP load split `(Z,I,P)` — active | `zip_load_p` | `(1,0,0)` | impedance / current / power fractions; must sum to 1; default = constant impedance |
 | ZIP load split `(Z,I,P)` — reactive | `zip_load_q` | `(1,0,0)` | independent of `zip_load_p`; must sum to 1 (e.g. REE: `zip_load_p=(0,1,0)`, `zip_load_q=(1,0,0)`) |
-| δ stability bound style | `bound_style` | `:swing_propagated` | `:coi_box` for FULL_BUS / USE_PM |
+| δ stability bound style | `bound_style` | `:swing_propagated` | `:coi_box` required by USE_PM / DQ_4TH; both forms build on every network form |
 | Box bounds on Δω − Δω_COI | `constrain_Δω_COI` | `false` | |
 | Δω_COI tolerance [p.u.] | `Δω_tol_pu` | `0.5` | Symmetric half-width when lower/upper unset; requires `constrain_Δω_COI=true` |
 | Below Δω_COI [p.u.] | `Δω_tol_pu_lower` | `nothing` | Optional; defaults to `Δω_tol_pu` |
@@ -228,7 +227,7 @@ Read from `INPUT_FILES/<case>/` by `load_system`. Scaled in memory by `RunConfig
 **not** produced — author it separately for TS runs.
 
 **Results folder layout:** conditional subfolders are chosen by `build_results_paths(cfg)` from
-`RunConfig` flags (`save_duals`, `save_matrices`, `save_ts_plots`, `save_warmstart_dispatch`, `use_acopf_warmstart`, `trans_stab`,
+`RunConfig` flags (`save_duals`, `save_matrices`, `save_ts_plots`, `save_warmstart_dispatch`, `trans_stab`,
 `dispatch.solve_explicit_dual`, `dispatch.type_model`). See [Running a case](running_a_case.md) §8.
 
 ---

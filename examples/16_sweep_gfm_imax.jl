@@ -407,7 +407,6 @@ const cfg = RunConfig(
     save_ts_plots           = false,  # false = no trajectory figures; true additionally needs load_plots_extension!()
     save_ts_debug_csv       = true,   # true = per-step GFM limiter diagnostics; the point of comparison across scenarios
     save_warmstart_dispatch = false,  # false = skip the warm-start dump; the dispatch is identical in every scenario
-    use_acopf_warmstart     = true,   # true = solve an ACOPF first and inject its V/θ/P_g/Q_g as start values
 
     dispatch  = dispatch_cfg,   # the DispatchConfig instance built above; also defines the warm-start problem
     transient = transient_cfg,  # the TransientConfig instance built above; REQUIRED when trans_stab = true

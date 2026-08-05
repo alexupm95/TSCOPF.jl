@@ -83,8 +83,9 @@ Base.@kwdef struct RunConfig
     # value, distance to the limit and dual on one row. Off by default — the filter file
     # alone is three rows per generator per step, which adds up fast over a sweep.
     save_ts_debug_csv::Bool = false
-    save_warmstart_dispatch::Bool = false   # FULL_BUS TSC-ACOPF: save pre-TS ACOPF warm-start to Dispatch_WarmStart/
-    use_acopf_warmstart::Bool = true        # FULL_BUS TSC-ACOPF: pre-solve ACOPF before TS assembly (false → flat start)
+    # TSC runs that pre-solve a steady-state OPF before TS assembly (FULL_BUS ACOPF
+    # warm start, TSC-DCOPF δ_ref anchor): archive that solution to Dispatch_WarmStart/.
+    save_warmstart_dispatch::Bool = false
 
     # --- avenue 1: steady-state dispatch -------------------------------------
     dispatch::DispatchConfig = DispatchConfig()
@@ -155,13 +156,9 @@ function validate_run_config!(cfg::RunConfig)
     end
     if cfg.save_warmstart_dispatch && !warmstart_dispatch_applicable(cfg)
         throw(ArgumentError(
-            "save_warmstart_dispatch=true requires trans_stab=true, dispatch.type_model=\"ACOPF\", " *
-            "transient.dyn_model.network_form=FULL_BUS, and use_acopf_warmstart=true."))
-    end
-    if !cfg.use_acopf_warmstart && !fullbus_tsc_acopf_applicable(cfg)
-        throw(ArgumentError(
-            "use_acopf_warmstart=false requires trans_stab=true, dispatch.type_model=\"ACOPF\", " *
-            "and transient.dyn_model.network_form=FULL_BUS."))
+            "save_warmstart_dispatch=true requires a TSC run with a steady-state pre-solve: " *
+            "either dispatch.type_model=\"ACOPF\" with network_form=FULL_BUS (ACOPF warm start) " *
+            "or dispatch.type_model=\"DCOPF\" with network_form=KRON_REDUCED (δ_ref anchor)."))
     end
     if is_ipopt_backend_solver(cfg.solver_name)
         validate_ipopt_solver_config!(cfg.ipopt, cfg.solver_name)
@@ -215,6 +212,16 @@ function validate_dyn_config!(cfg::RunConfig)
         throw(ArgumentError("include_avr=true requires gen_order=DQ_4TH."))
     end
 
+    # The FULL_BUS builders need mechanical power as its own state (the swing is driven
+    # by an explicit nodal Pe, so pinning P_mech ≡ P_g would over-constrain the coupling).
+    # Both builders already throw, but only after the warm-start ACOPF has been solved —
+    # check here so the run dies before paying for that solve.
+    if dyn.network_form == FULL_BUS && dyn.mech_power_mode != USE_PM
+        throw(ArgumentError(
+            "network_form=FULL_BUS requires mech_power_mode=USE_PM " *
+            "(P_m must be an independent variable on the full-network paths)."))
+    end
+
     if dyn.gen_order == DQ_4TH
         # Milestone 1/2/3: machine core; optional AVR and governor.
         dyn.mech_power_mode != USE_PM && throw(ArgumentError(
@@ -246,6 +253,16 @@ function validate_dyn_config!(cfg::RunConfig)
     if dyn.ode_first_step ∉ (:trapezoidal, :backward_euler)
         throw(ArgumentError(
             "ode_first_step must be :trapezoidal or :backward_euler (got $(dyn.ode_first_step))."))
+    end
+
+    # The Kron swing rows hard-code the trapezoidal average at every step, including
+    # t=1, so backward Euler is unimplemented there rather than merely unwired. Throw
+    # instead of silently integrating with a scheme the user did not ask for.
+    if dyn.ode_first_step === :backward_euler && dyn.network_form == KRON_REDUCED
+        throw(ArgumentError(
+            "ode_first_step=:backward_euler is not implemented on network_form=KRON_REDUCED " *
+            "(the Kron swing equations are trapezoidal at every step). " *
+            "Use network_form=FULL_BUS for the backward-Euler first step."))
     end
 
     if dyn.gfm_integrator ∉ (:follow_ode_first_step, :backward_euler, :trapezoidal)
@@ -458,7 +475,18 @@ function _ensure_gen_dyn_ids_from_raw_if_needed(
     return DGEN_DYN
 end
 
-"""Resolve FULL_BUS coupling hints: ACOPF pre-solve or flat-start recipe."""
+"""
+    resolve_fullbus_coupling_hints!(cfg, model, opf_dict, obj_function_MVA,
+                                    path_names, sys, solver_log_warmstart)
+
+Solve the steady-state ACOPF that seeds every FULL_BUS coupling variable and return
+its operating point as [`SteadyStateHints`](@ref).
+
+The pre-solve is **mandatory** on FULL_BUS: the dynamic variables (E, δ, Ed/Eq,
+Id/Iq, bus V/θ) are initialised from it, and a flat guess leaves the joint NLP far
+enough from any equilibrium that Ipopt typically stalls at iteration 0. A failed
+pre-solve therefore aborts the run rather than falling back.
+"""
 function resolve_fullbus_coupling_hints!(
     cfg::RunConfig,
     model::Model,
@@ -467,57 +495,88 @@ function resolve_fullbus_coupling_hints!(
     path_names::OrderedDict{Symbol, String},
     sys::SystemData,
     solver_log_warmstart::String,
-)::Tuple{SteadyStateHints, CouplingInitSource}
-    if cfg.use_acopf_warmstart
-        println("\n--- FULL_BUS: solving steady-state ACOPF for warm start ---")
-        set_solver_log_path!(model, cfg.solver_name, solver_log_warmstart)
-        optimize!(model)
-        ws_status = termination_status(model)
-        if ws_status == MOI.OPTIMAL || ws_status == MOI.LOCALLY_SOLVED
-            hints = extract_opf_solved_hints(opf_dict)
-            println("ACOPF warm start succeeded — injecting solved V/θ/P_g/Q_g into TS starts.")
-            println("Warm-start objective: $(JuMP.value.(obj_function_MVA))\n")
-            cfg.save_warmstart_dispatch && save_fullbus_warmstart_dispatch!(
-                cfg, path_names, model, obj_function_MVA, opf_dict, sys)
-            return hints, :acopf_warmstart
-        else
-            throw(ArgumentError(
-                "FULL_BUS requires a successful ACOPF warm start before TS assembly " *
-                "(termination status: $ws_status). Set use_acopf_warmstart=false for flat start."))
-        end
-    else
-        println("\n--- FULL_BUS: flat-start coupling (no ACOPF pre-solve) ---")
-        hints = build_flat_start_hints(sys.DBUS, sys.DGEN, cfg.base_MVA)
-        apply_steady_state_hints_to_opf!(opf_dict, hints)
-        println("Flat-start hints applied — V=1 p.u., θ=0, P_g/Q_g from case setpoints.\n")
-        return hints, :flat_start
+)::SteadyStateHints
+    println("\n--- FULL_BUS: solving steady-state ACOPF for warm start ---")
+    set_solver_log_path!(model, cfg.solver_name, solver_log_warmstart)
+    optimize!(model)
+    ws_status = termination_status(model)
+    if ws_status != MOI.OPTIMAL && ws_status != MOI.LOCALLY_SOLVED
+        throw(ArgumentError(
+            "FULL_BUS requires a successful ACOPF warm start before TS assembly " *
+            "(termination status: $ws_status). Check the case data and the steady-state " *
+            "limits, or relax the Ipopt tolerances; see $solver_log_warmstart."))
     end
+    hints = extract_opf_solved_hints(opf_dict)
+    println("ACOPF warm start succeeded — injecting solved V/θ/P_g/Q_g into TS starts.")
+    println("Warm-start objective: $(JuMP.value.(obj_function_MVA))\n")
+    cfg.save_warmstart_dispatch && save_warmstart_dispatch!(
+        cfg, path_names, model, obj_function_MVA, opf_dict, sys;
+        type_model="ACOPF",
+        model_label=cfg.dispatch.use_matrix ? "AC-OPF (Ybus, warm start)" : "AC-OPF (warm start)")
+    return hints
 end
 
-"""Persist the FULL_BUS ACOPF warm-start solution before TS assembly."""
-function save_fullbus_warmstart_dispatch!(
+"""
+    save_warmstart_dispatch!(cfg, path_names, model, obj_function_MVA, opf_dict, sys;
+                             type_model, model_label)
+
+Persist the steady-state pre-solve that precedes TS assembly to `Dispatch_WarmStart/`.
+
+Used by both pre-solving paths — the FULL_BUS ACOPF warm start and the TSC-DCOPF
+solve that fixes the Taylor anchor `δ_ref` — because `Export_OPF_Model` and
+`Save_Solution_Optimal_Dispatch` already select their content from `opf_dict`.
+"""
+function save_warmstart_dispatch!(
     cfg::RunConfig,
     path_names::OrderedDict{Symbol, String},
     model::Model,
     obj_function_MVA,
     opf_dict::OrderedDict{Symbol, Any},
-    sys::SystemData,
+    sys::SystemData;
+    type_model::String,
+    model_label::String,
 )
     ws_paths = dispatch_warmstart_path_names(path_names)
     mkpath(ws_paths[:pf_dispatch])
     mkpath(ws_paths[:pf_dispatch_CSV])
     cfg.save_duals && mkpath(ws_paths[:pf_dispatch_CSV_duals])
 
-    model_label = cfg.dispatch.use_matrix ? "AC-OPF (Ybus, warm start)" : "AC-OPF (warm start)"
     Export_OPF_Model(model, ws_paths, obj_function_MVA, opf_dict; model_label=model_label)
     Save_Solution_Optimal_Dispatch(
-        ws_paths, model, "ACOPF", cfg.dispatch.use_matrix,
+        ws_paths, model, type_model, cfg.dispatch.use_matrix,
         obj_function_MVA, opf_dict,
         sys.bus_gen_circ_dict, sys.DBUS, sys.DGEN, sys.DCIR,
         cfg.base_MVA, sys.nBUS, sys.nGEN, sys.nCIR,
         sys.bus_mapping, sys.reverse_bus_mapping;
         _save_duals=cfg.save_duals)
-    println("FULL_BUS ACOPF warm-start dispatch saved in: ", ws_paths[:pf_dispatch])
+    println("Warm-start dispatch ($type_model) saved in: ", ws_paths[:pf_dispatch])
+    return nothing
+end
+
+"""
+    save_delta_ref_csv!(path_names, δ_ref)
+
+Write the TSC-DCOPF linearisation anchor to `Dispatch_WarmStart/CSV/delta_ref.csv`.
+
+`δ_ref[g] = P_g·X'_d + θ_bus(g)` from the DC pre-solve is the point the electrical
+power is Taylor-expanded around, so it is a property of the *run*, not of the final
+solution: nothing downstream re-derives it.
+"""
+function save_delta_ref_csv!(
+    path_names::OrderedDict{Symbol, String},
+    δ_ref::OrderedDict{Int64, Float64},
+)
+    isempty(δ_ref) && return nothing
+    ws_csv = path_names[:pf_dispatch_warmstart_CSV]
+    mkpath(ws_csv)
+    gens = sort(collect(keys(δ_ref)))
+    table = DataFrame(
+        gen = gens,
+        delta_ref_rad = [δ_ref[g] for g in gens],
+        delta_ref_deg = [rad2deg(δ_ref[g]) for g in gens],
+    )
+    CSV.write(joinpath(ws_csv, "delta_ref.csv"), table; delim=';')
+    println("TSC-DCOPF linearisation anchor saved to: ", joinpath(ws_csv, "delta_ref.csv"))
     return nothing
 end
 
@@ -624,7 +683,6 @@ function run_case!(cfg::RunConfig, sys::SystemData,
     primal_dcopf_f_star = nothing
     δ_ref = OrderedDict{Int64, Float64}()
     steady_state_hints = nothing
-    coupling_init_source::CouplingInitSource = :acopf_warmstart
     if cfg.trans_stab && type_model == "DCOPF"
         set_solver_log_path!(model, cfg.solver_name, solver_log_warmstart)
         optimize!(model)
@@ -640,10 +698,20 @@ function run_case!(cfg::RunConfig, sys::SystemData,
                 δ_ref[gen] = Pg_sol[gen] * Xd_prime + θ_sol[bus]
             end
             println("Steady-state objective: $(JuMP.value.(obj_function_MVA)) \n")
+            # This solve is a genuine pre-solve: its dispatch is what δ_ref is built
+            # from, and the TS constraints below linearise around it.
+            if cfg.save_warmstart_dispatch
+                save_warmstart_dispatch!(
+                    cfg, path_names, model, obj_function_MVA, opf_dict, sys;
+                    type_model="DCOPF",
+                    model_label=cfg.dispatch.use_matrix ? "DC-OPF (Bbus, warm start)" :
+                                                          "DC-OPF (warm start)")
+                save_delta_ref_csv!(path_names, δ_ref)
+            end
         end
     elseif cfg.trans_stab && type_model == "ACOPF" &&
            cfg.transient.dyn_model.network_form == FULL_BUS
-        steady_state_hints, coupling_init_source = resolve_fullbus_coupling_hints!(
+        steady_state_hints = resolve_fullbus_coupling_hints!(
             cfg, model, opf_dict, obj_function_MVA, path_names, sys, solver_log_warmstart)
     end
 
@@ -668,7 +736,6 @@ function run_case!(cfg::RunConfig, sys::SystemData,
             linearize=linearize,
             δ_ref=linearize ? δ_ref : nothing,
             steady_state_hints=steady_state_hints,
-            coupling_init_source=coupling_init_source,
             DGFM=sys.DGFM,
         )
         # After TS assembly, Ipopt cold-starts from `start=` (not the prior ACOPF
@@ -678,8 +745,10 @@ function run_case!(cfg::RunConfig, sys::SystemData,
             apply_steady_state_hints_to_opf!(opf_dict, steady_state_hints)
         end
         # Snapshot pre-fault coupling JuMP start= values under Dispatch_WarmStart/
-        # (before joint optimize!). Independent of save_warmstart_dispatch.
-        if coupling_init_source == :acopf_warmstart && dyn_model_dict !== nothing
+        # (before joint optimize!). Independent of save_warmstart_dispatch, but only
+        # meaningful where the starts came from a solved ACOPF: off FULL_BUS the Kron
+        # builders seed δ=0 / E=1 constants, so the file would record nothing.
+        if steady_state_hints !== nothing && dyn_model_dict !== nothing
             Save_Prefault_Coupling_Starts!(dyn_model_dict, path_names)
         end
     end

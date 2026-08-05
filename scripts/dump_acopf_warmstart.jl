@@ -29,7 +29,6 @@ cfg = RunConfig(
     save_matrices = false,
     save_ts_plots = false,
     save_optim_matrices = false,
-    use_acopf_warmstart = true,
     ipopt = IpoptSolverConfig(
         tol = 1e-8,
         max_iter = 350,

@@ -163,14 +163,13 @@ Base.@kwdef struct DynModelConfig
     fault::FaultConfig            = FaultConfig()
 end
 
-# --- FULL_BUS coupling hints (ACOPF warm start or synthetic flat start) -------
+# --- FULL_BUS coupling hints (from the mandatory ACOPF warm start) ------------
 
 """
     SteadyStateHints
 
 Operating-point snapshot used to set `start=` on FULL_BUS dynamic variables.
-Populated by `extract_opf_solved_hints` after an ACOPF pre-solve, or by
-`build_flat_start_hints` when `RunConfig.use_acopf_warmstart=false`.
+Populated by `extract_opf_solved_hints` after the mandatory ACOPF pre-solve.
 """
 struct SteadyStateHints
     val_V::Dict{Int, Float64}

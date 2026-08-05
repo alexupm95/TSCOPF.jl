@@ -187,7 +187,7 @@ const dyn_model_cfg = DynModelConfig(
     include_governor        = false,            # false is mandatory here: the governor requires FULL_BUS
     governor_limiter        = GOV_NO_LIMIT,     # valve saturation mode; read only when include_governor = true
     allow_gfm               = false,            # false is mandatory here: GFM requires FULL_BUS + DQ_4TH
-    ode_first_step          = :trapezoidal,     # scheme for the first row of each window; :backward_euler matches the reference
+    ode_first_step          = :trapezoidal,     # :trapezoidal is mandatory here: the Kron swing rows have no backward-Euler form
     gfm_integrator          = :backward_euler,  # discretisation of the GFM filters / Q–V PI; read only when allow_gfm = true
     # (Z, I, P) splits — IGNORED on KRON_REDUCED (loads fold into Y_red).
     zip_load_p              = (1.0, 0.0, 0.0),  # active demand: 100 % constant impedance, 0 % current, 0 % power
@@ -282,8 +282,7 @@ const base_cfg = RunConfig(
     save_matrices           = false,  # false = skip the Ybus/Y_red dumps; identical in all 11 scenarios, so 11 copies is waste
     save_ts_plots           = false,  # false = no trajectory figures; true additionally needs load_plots_extension!()
     save_ts_debug_csv       = false,  # false = no per-step diagnostic dumps; those are GFM-specific anyway
-    save_warmstart_dispatch = false,  # false is mandatory here: the dump is FULL_BUS TSC-ACOPF only
-    use_acopf_warmstart     = true,   # true = required value off FULL_BUS; no pre-solve is triggered on this path
+    save_warmstart_dispatch = false,  # false is mandatory here: Kron TSC-ACOPF has no pre-solve to archive
 
     dispatch  = dispatch_cfg,   # the DispatchConfig instance built above
     transient = transient_cfg,  # the TransientConfig instance built above; REQUIRED when trans_stab = true

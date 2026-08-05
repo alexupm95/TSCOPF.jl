@@ -50,7 +50,8 @@ gen_order(::ClassicalKronModel) = CLASSICAL_2ND
 Classical swing on the full sparse admittance matrix (no Kron reduction).
 Reference full-network TSC-ACOPF formulation.  TSC-ACOPF only; default
 `mech_power_mode=USE_PM`.  `bound_style` and `constrain_Δω_COI` follow the
-same conventions as `ClassicalKronModel`.
+same conventions as `ClassicalKronModel`.  `ode_first_step` selects the
+integration rule for the first row of each window (the Kron path cannot).
 """
 struct ClassicalFullBusModel <: AbstractDynamicGenModel
     mech_power_mode::MechPowerMode
@@ -61,6 +62,7 @@ struct ClassicalFullBusModel <: AbstractDynamicGenModel
     zip_load_q::NTuple{3, Float64}  # reactive-demand (Z, I, P) split; independent of P
     include_governor::Bool        # optional TGOV1 turbine governor (time-varying P_mech)
     governor_limiter::GovernorLimiter # valve saturation treatment (only if include_governor)
+    ode_first_step::Symbol        # :trapezoidal | :backward_euler (first row of each window)
 end
 
 network_form(::ClassicalFullBusModel) = FULL_BUS
@@ -134,6 +136,7 @@ function dynamic_gen_model(dyn::DynModelConfig; linearize::Bool)::AbstractDynami
             dyn.zip_load_q,
             dyn.include_governor,
             dyn.governor_limiter,
+            dyn.ode_first_step,
         )
     elseif dyn.gen_order == DQ_4TH && dyn.network_form == FULL_BUS
         return DqFullBusModel(
@@ -187,6 +190,7 @@ function register_dyn_model_meta!(
         dyn_model_dict[:meta][:zip_load_q] = collect(gen_model.zip_load_q)
         dyn_model_dict[:meta][:include_governor] = gen_model.include_governor
         dyn_model_dict[:meta][:governor_limiter] = string(gen_model.governor_limiter)
+        dyn_model_dict[:meta][:ode_first_step] = gen_model.ode_first_step
     elseif gen_model isa DqFullBusModel
         dyn_model_dict[:meta][:bound_style] = gen_model.bound_style
         dyn_model_dict[:meta][:constrain_Δω_COI] = gen_model.constrain_Δω_COI

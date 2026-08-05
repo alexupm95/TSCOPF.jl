@@ -112,8 +112,8 @@ export validate_run_config!, validate_dyn_config!
 export DispatchConfig, DispatchLimitsConfig, BoundEncoding, TransientConfig, TsSimulationConfig, TsBuilderConfig
 export TsBoundLimitsConfig, TsBoundLimitPair
 export validate_dispatch_config!
-export DynModelConfig, FaultConfig, SteadyStateHints, CouplingInitSource
-export build_flat_start_hints, apply_steady_state_hints_to_opf!, coupling_init_source_label
+export DynModelConfig, FaultConfig, SteadyStateHints
+export apply_steady_state_hints_to_opf!
 export GenOrder, NetworkForm, MechPowerMode, FaultType, SusceptanceModel, GovernorLimiter
 export SC, GL, OB, CLASSICAL_2ND, DQ_4TH, KRON_REDUCED, FULL_BUS, USE_PG, USE_PM, SIMPLE, POWERMODELS
 export GOV_NO_LIMIT, GOV_SMOOTH, GOV_HARD_BOUND

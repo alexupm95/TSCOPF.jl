@@ -72,7 +72,7 @@ Note that the set-point is `R`-scaled — `P_ref = R·P_m` at the equilibrium �
 
 ## First-step discretisation
 
-TSCOPF anchors the `t = 1` row of the exciter and governor windows **trapezoidally**, where the reference implementation these layers were cross-validated against takes a backward-Euler first step. The physics is identical either way; only the first row of each window differs. Set `DynModelConfig.ode_first_step = :backward_euler` to reproduce that first step exactly.
+TSCOPF anchors the `t = 1` row of the exciter and governor windows **trapezoidally**, where the reference implementation these layers were cross-validated against takes a backward-Euler first step. The physics is identical either way; only the first row of each window differs. Set `DynModelConfig.ode_first_step = :backward_euler` to reproduce that first step exactly. The switch reaches the swing, EMF, exciter and governor rows on both FULL_BUS paths (classical and DQ); on `KRON_REDUCED` it is rejected, because those swing rows have no backward-Euler form.
 
 ## See also
 

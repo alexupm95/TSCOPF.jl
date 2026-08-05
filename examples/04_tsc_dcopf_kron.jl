@@ -160,7 +160,7 @@ const dyn_model_cfg = DynModelConfig(
     include_governor        = false,            # false is mandatory here: the governor requires FULL_BUS
     governor_limiter        = GOV_NO_LIMIT,     # valve saturation mode; read only when include_governor = true
     allow_gfm               = false,            # false is mandatory here: GFM requires FULL_BUS + DQ_4TH + ACOPF
-    ode_first_step          = :trapezoidal,     # scheme for the first row of each window; :backward_euler matches the reference
+    ode_first_step          = :trapezoidal,     # :trapezoidal is mandatory here: the Kron swing rows have no backward-Euler form
     gfm_integrator          = :backward_euler,  # discretisation of the GFM filters / Q–V PI; read only when allow_gfm = true
     # (Z, I, P) splits. IGNORED on KRON_REDUCED — loads are folded into Y_red as
     # constant admittance — and a non-default value here only earns a warning.
@@ -256,10 +256,10 @@ const cfg = RunConfig(
     save_matrices           = true,   # true = dump Ybus, Y_red and the fault matrices
     save_ts_plots           = false,  # false = no trajectory figures; true additionally needs load_plots_extension!()
     save_ts_debug_csv       = false,  # false = no per-step diagnostic dumps; those are GFM-specific anyway
-    save_warmstart_dispatch = false,  # false is mandatory here: the dump is FULL_BUS TSC-ACOPF only
-    # Must stay true off the FULL_BUS TSC-ACOPF path (engine.jl:161-165). Inert here:
-    # this avenue runs its own DC-OPF pre-solve for δ_ref, not an ACOPF warm start.
-    use_acopf_warmstart     = true,   # true = required value on this path; it triggers nothing here
+    # This avenue runs its own DC-OPF pre-solve, whose dispatch fixes the Taylor anchor
+    # δ_ref that every linearised Pe row expands around. true archives that solve to
+    # Dispatch_WarmStart/ (reports + CSV/delta_ref.csv); nothing else records δ_ref.
+    save_warmstart_dispatch = true,   # true = archive the DC pre-solve and its δ_ref
 
     dispatch  = dispatch_cfg,   # the DispatchConfig instance built above
     transient = transient_cfg,  # the TransientConfig instance built above; REQUIRED when trans_stab = true

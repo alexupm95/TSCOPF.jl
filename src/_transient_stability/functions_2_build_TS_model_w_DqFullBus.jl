@@ -50,7 +50,6 @@ function Make_Dynamic_Model_dqfullbus!(
     ode_first_step::Symbol=:trapezoidal,
     gfm_integrator::Symbol=:backward_euler,
     steady_state_hints::SteadyStateHints,
-    coupling_init_source::CouplingInitSource=:acopf_warmstart,
     DGFM::Union{Nothing, DataFrame}=nothing,
 )
     mech_power_mode == USE_PM || throw(ArgumentError(
@@ -82,7 +81,7 @@ function Make_Dynamic_Model_dqfullbus!(
         :Δω_tol => Δω_tol,
         :network_form => "FULL_BUS",
         :gen_order => "DQ_4TH",
-        :coupling_init_source => coupling_init_source_label(coupling_init_source),
+        :coupling_init_source => "acopf_warmstart",   # the only FULL_BUS coupling path
         :dq_speed_dev_in_algebra => dq_speed_dev_in_algebra,
         :include_avr => include_avr,
         :include_governor => include_governor,
@@ -487,9 +486,9 @@ function Define_Fault_Dynamic_Model_dq!(
     dyn_model_dict[:eq_const][:eq_const_δCOI_tf] = eq_const_kron_COI_generic!(
         model, δ_tf, δCOI_tf, sg_gens, DGEN_DYN, time_window)
     attach_fault_tf_var_bounds!(model, dyn_model_dict)
-    _add_fullbus_δ_COI_bounds_fault!(
+    _add_δ_COI_bounds_fault!(
         model, dyn_model_dict, sg_gens, DGEN_DYN, P_mech, δ_tf, δCOI_tf,
-        Δω_tf, Pe_tf, time_window, δ_tol, δ_0, Δω_0, P_g, ω_syn, Δt)
+        Δω_tf, Pe_tf, time_window, δ_tol, δ_0, Δω_0, ω_syn, Δt)
 
     if get(dyn_model_dict[:meta], :constrain_Δω_COI, false)
         Δω_tol = dyn_model_dict[:meta][:Δω_tol]
@@ -654,7 +653,7 @@ function Define_PostFault_Dynamic_Model_dq!(
     dyn_model_dict[:eq_const][:eq_const_δCOI_tpf] = eq_const_kron_COI_generic!(
         model, δ_tpf, δCOI_tpf, sg_gens, DGEN_DYN, time_window)
     attach_postfault_tpf_var_bounds!(model, dyn_model_dict)
-    _add_fullbus_δ_COI_bounds_postf!(
+    _add_δ_COI_bounds_postf!(
         model, dyn_model_dict, sg_gens, DGEN_DYN, P_mech, δ_tpf, δCOI_tpf,
         Δω_tpf, Pe_tpf, time_window, δ_tol, δ_ant, Δω_ant, Pe_ant, ω_syn, Δt)
 

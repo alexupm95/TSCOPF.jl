@@ -15,15 +15,16 @@
   trajectory variables and the ZIP load split becomes real physics rather than a
   folded constant admittance.
 
-  Two consequences worth knowing before comparing against 05:
+  Three consequences worth knowing before comparing against 05:
     • An ACOPF pre-solve runs first and injects V/θ/P_g/Q_g as `start=` values on
       the dynamic variables. Its log is solver_log_warmstart.txt, separate from
-      solver_log.txt. It is mandatory in practice — a flat start on FULL_BUS
-      rarely converges — and `run_case!` throws if it does not reach optimality
-      (engine.jl:483-486).
-    • `mech_power_mode = USE_PM` is required by the builder itself
-      (functions_2_build_TS_model_w_FullBus.jl:71-72), which in turn forces
-      `bound_style = :coi_box` (engine.jl:265-268).
+      solver_log.txt. It is mandatory and unconditional — a flat start on FULL_BUS
+      rarely converges — and `run_case!` throws if it does not reach optimality.
+    • `mech_power_mode = USE_PM` is required (validated before any solve), which in
+      turn forces `bound_style = :coi_box`.
+    • Unlike the Kron avenue, `ode_first_step = :backward_euler` is honoured here:
+      the first row of each window switches from the trapezoidal average to plain
+      backward Euler, which is what the reference implementation does.
 
   There is deliberately no "FULL_BUS + 2nd order + AVR" example: `include_avr`
   requires DQ_4TH (engine.jl:214-216) because a constant-EMF machine has no field
@@ -267,12 +268,9 @@ const cfg = RunConfig(
     save_matrices           = true,   # true = dump Ybus and the fault matrices
     save_ts_plots           = false,  # false = no trajectory figures; true additionally needs load_plots_extension!()
     save_ts_debug_csv       = false,  # false = no per-step diagnostic dumps; those are GFM-specific anyway
-    # Legal from here on (needs trans_stab + ACOPF + FULL_BUS + use_acopf_warmstart):
-    # dumps the pre-TS ACOPF solution to Dispatch_WarmStart/.
+    # Legal on the two avenues that pre-solve a steady-state OPF (FULL_BUS TSC-ACOPF
+    # here; TSC-DCOPF in example 04): dumps that solution to Dispatch_WarmStart/.
     save_warmstart_dispatch = true,   # true = archive the warm-start dispatch alongside the TSC result
-    # The one avenue where this may be false. Flat start instead of the ACOPF
-    # pre-solve — expect a much harder solve; the pre-solve exists for a reason.
-    use_acopf_warmstart     = true,   # true = solve an ACOPF first and inject its V/θ/P_g/Q_g as start values
 
     dispatch  = dispatch_cfg,   # the DispatchConfig instance built above; also defines the warm-start problem
     transient = transient_cfg,  # the TransientConfig instance built above; REQUIRED when trans_stab = true

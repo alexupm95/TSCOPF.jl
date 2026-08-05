@@ -80,7 +80,6 @@ function _sim_run_io()
         save_ts_plots = false,
         save_optim_matrices = false,
         save_warmstart_dispatch = true,
-        use_acopf_warmstart = true,
         overwrite_results = TEST_OVERWRITE_RESULTS,
         silent_solver = true,
     )
@@ -239,7 +238,7 @@ end
 
 const SIMULATION_PIN_SOLVED = (OPTIMAL, LOCALLY_SOLVED, ITERATION_LIMIT)
 
-"""Kron I/O: warm start on, but do not save Dispatch_WarmStart folder (matches bound_compare_2nd_kron)."""
+"""Kron I/O: no pre-solve on this path, so no Dispatch_WarmStart folder (matches bound_compare_2nd_kron)."""
 function _sim_kron_run_io()
     return (
         save_duals = true,
@@ -247,7 +246,6 @@ function _sim_kron_run_io()
         save_ts_plots = false,
         save_optim_matrices = false,
         save_warmstart_dispatch = false,
-        use_acopf_warmstart = true,
         overwrite_results = TEST_OVERWRITE_RESULTS,
         silent_solver = true,
     )
@@ -281,8 +279,11 @@ function sim_config_2nd_kron(;
             dyn_model = DynModelConfig(
                 gen_order = CLASSICAL_2ND,
                 network_form = KRON_REDUCED,
-                mech_power_mode = USE_PM,
-                bound_style = :coi_box,
+                # Recorded before Kron honoured `bound_style`: USE_PM + :coi_box then
+                # built the swing-propagated bound. USE_PG + :swing_propagated names
+                # that same model, so the pins keep their meaning.
+                mech_power_mode = USE_PG,
+                bound_style = :swing_propagated,
                 zip_load_p = (1.0, 0.0, 0.0),
                 zip_load_q = (1.0, 0.0, 0.0),
                 include_avr = false,
@@ -382,8 +383,9 @@ function sim_config_gl_gen3_kron(;
             dyn_model = DynModelConfig(
                 gen_order = CLASSICAL_2ND,
                 network_form = KRON_REDUCED,
-                mech_power_mode = USE_PM,
-                bound_style = :coi_box,
+                # See sim_config_2nd_kron: names the model the pins were recorded on.
+                mech_power_mode = USE_PG,
+                bound_style = :swing_propagated,
                 zip_load_p = (1.0, 0.0, 0.0),
                 zip_load_q = (1.0, 0.0, 0.0),
                 include_avr = false,
@@ -414,7 +416,6 @@ function sim_config_4th_fullbus_avr_tg(;
         save_ts_plots = false,
         save_optim_matrices = false,
         save_warmstart_dispatch = true,
-        use_acopf_warmstart = true,
         overwrite_results = TEST_OVERWRITE_RESULTS,
         silent_solver = true,
         dispatch = DispatchConfig(
@@ -465,7 +466,6 @@ function sim_config_4th_fullbus_tg(;
         save_ts_plots = false,
         save_optim_matrices = false,
         save_warmstart_dispatch = true,
-        use_acopf_warmstart = true,
         overwrite_results = TEST_OVERWRITE_RESULTS,
         time_limit_sec = 1200.0,
         silent_solver = true,
@@ -508,9 +508,7 @@ function _dispatch_run_io()
         save_matrices = true,
         save_ts_plots = false,
         save_optim_matrices = false,
-        # Not applicable when `trans_stab=false`, but `validate_run_config!` expects
-        # `use_acopf_warmstart=true` unless FULL_BUS TSC coupling is active.
-        use_acopf_warmstart = true,
+        # Not applicable when `trans_stab=false`: there is no pre-solve to archive.
         save_warmstart_dispatch = false,
         overwrite_results = TEST_OVERWRITE_RESULTS,
         time_limit_sec = 1200.0,

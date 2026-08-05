@@ -44,7 +44,7 @@ const CTRL_SIM = TsSimulationConfig(δ_tol_deg = 100.0, t_end_sim = 0.6,
     t_step = 0.02, clearing_time = 0.2)
 
 """
-    controls_run(; gen_order, include_avr, include_governor, limiter, use_acopf_warmstart)
+    controls_run(; gen_order, include_avr, include_governor, limiter, ode_first_step)
 
 One FULL_BUS TSC-ACOPF SC run with the requested control stack. `gen_order`
 selects the classical or dq machine; the dq path needs `gen_dynamic_data_full.csv`.
@@ -54,7 +54,7 @@ function controls_run(; gen_order::GenOrder = DQ_4TH,
                         include_avr::Bool = false,
                         include_governor::Bool = false,
                         limiter::GovernorLimiter = GOV_NO_LIMIT,
-                        use_acopf_warmstart::Bool = true)
+                        ode_first_step::Symbol = :trapezoidal)
     cfg = RunConfig(;
         trans_stab = true,
         case = "9bus",
@@ -66,7 +66,6 @@ function controls_run(; gen_order::GenOrder = DQ_4TH,
         save_optim_matrices = false,
         overwrite_results = TEST_OVERWRITE_RESULTS,
         load_factor = 1.5,
-        use_acopf_warmstart = use_acopf_warmstart,
         dispatch = DispatchConfig(type_model = "ACOPF", use_matrix = true),
         transient = TransientConfig(
             simulation = CTRL_SIM,
@@ -82,6 +81,7 @@ function controls_run(; gen_order::GenOrder = DQ_4TH,
                 include_avr = include_avr,
                 include_governor = include_governor,
                 governor_limiter = limiter,
+                ode_first_step = ode_first_step,
                 fault = FaultConfig(fault_type = SC, contingency_id = 2),
             ),
         ),
@@ -103,6 +103,17 @@ function _max_excursion(df::DataFrame)
         m = max(m, maximum(abs.(col .- col[1])))
     end
     return m
+end
+
+"""
+First generator column of an exported trajectory CSV, as a plain vector.
+
+Read from disk rather than from `dyn_model_dict`: `run_case!` empties the JuMP model
+before returning, so every `VariableRef` it holds is dead by the time a test runs.
+"""
+function _first_gen_series(result, filename::AbstractString)
+    df = CSV.read(joinpath(result.path_names[:pf_TS_CSV], filename), DataFrame; delim = ';')
+    return Float64.(df[!, 2])          # column 1 is time, column 2 is the first machine
 end
 
 """Toy per-(gen,t) variable dict for the limiter / clamp unit tests (no solve)."""
@@ -332,22 +343,23 @@ end
             @test get(dmd[:meta], :include_governor, false)
         end
 
-        # Flat start skips the mandatory ACOPF pre-solve, so the coupling variables
-        # are seeded from defaults rather than a solved operating point. Distinct
-        # code path from every other run in this file.
-        @testset "DQ_4TH + AVR + TGOV1 — flat-start coupling" begin
-            result = controls_run(include_avr = true, include_governor = true,
-                                  use_acopf_warmstart = false).result
-            dmd = result.dyn_model_dict
-            @test dmd !== nothing
-            @test dmd[:meta][:coupling_init_source] == "flat_start"
-            @test dmd[:meta][:gen_order] == "DQ_4TH"
-            @test haskey(dmd[:vars], :E_fd)
-            @test haskey(dmd[:vars], :V_ref)
-            @test haskey(dmd[:vars], :P_ref)
-            @test haskey(dmd[:eq_const], :eq_const_P_init)
-            @test haskey(dmd[:eq_const], :eq_const_Q_init)
-            @test haskey(dmd[:eq_const], :eq_const_Pm_init)
+        # `ode_first_step` reaches the classical FULL_BUS swing rows (it used to be
+        # threaded only to the dq builder, so a CLASSICAL_2ND run silently integrated
+        # trapezoidally whatever was asked for). Backward Euler drops the Δω_0 term
+        # from the t=1 angle row, so that row has one term fewer than the trapezoidal
+        # one; every later row is unchanged.
+        @testset "CLASSICAL_2ND FULL_BUS — ode_first_step reaches the swing rows" begin
+            res_be = controls_run(gen_order = CLASSICAL_2ND,
+                                  ode_first_step = :backward_euler).result
+            res_tr = controls_run(gen_order = CLASSICAL_2ND,
+                                  ode_first_step = :trapezoidal).result
+            @test res_be.dyn_model_dict[:meta][:ode_first_step] === :backward_euler
+            @test res_tr.dyn_model_dict[:meta][:ode_first_step] === :trapezoidal
+            # Trajectories must differ: the first integration step is a different rule.
+            δ_be = _first_gen_series(res_be, "angle_abs.csv")
+            δ_tr = _first_gen_series(res_tr, "angle_abs.csv")
+            @test length(δ_be) == length(δ_tr)
+            @test !isapprox(δ_be, δ_tr; atol = 1e-10)
         end
 
     end   # CONTROLS_RUN_SOLVES

@@ -98,7 +98,6 @@ function assemble_dynamic_model!(
     ts_builder::TsBuilderConfig,
     δ_ref::Union{Nothing, OrderedDict{Int64, Float64}}=nothing,
     steady_state_hints::SteadyStateHints,
-    coupling_init_source::CouplingInitSource=:acopf_warmstart,
     DGFM::Union{Nothing, DataFrame}=nothing,
 )
     δ_ref !== nothing && @warn "δ_ref is ignored for ClassicalFullBusModel (ACOPF only)."
@@ -117,8 +116,8 @@ function assemble_dynamic_model!(
         zip_load_q=gen_model.zip_load_q,
         include_governor=gen_model.include_governor,
         governor_limiter=gen_model.governor_limiter,
+        ode_first_step=gen_model.ode_first_step,
         steady_state_hints=steady_state_hints,
-        coupling_init_source=coupling_init_source,
     )
 end
 
@@ -147,7 +146,6 @@ function assemble_dynamic_model!(
     ts_builder::TsBuilderConfig,
     δ_ref::Union{Nothing, OrderedDict{Int64, Float64}}=nothing,
     steady_state_hints::SteadyStateHints,
-    coupling_init_source::CouplingInitSource=:acopf_warmstart,
     DGFM::Union{Nothing, DataFrame}=nothing,
 )
     δ_ref !== nothing && @warn "δ_ref is ignored for DqFullBusModel (ACOPF only)."
@@ -169,7 +167,6 @@ function assemble_dynamic_model!(
         ode_first_step=gen_model.ode_first_step,
         gfm_integrator=gen_model.gfm_integrator,
         steady_state_hints=steady_state_hints,
-        coupling_init_source=coupling_init_source,
         DGFM=DGFM,
     )
 end
@@ -244,7 +241,6 @@ function Build_Dynamic_Model!(
     linearize::Bool,
     δ_ref::Union{Nothing, OrderedDict{Int64, Float64}}=nothing,
     steady_state_hints::Union{Nothing, SteadyStateHints}=nothing,
-    coupling_init_source::CouplingInitSource=:acopf_warmstart,
     DGFM::Union{Nothing, DataFrame}=nothing,
 )
     dyn = transient.dyn_model
@@ -257,14 +253,13 @@ function Build_Dynamic_Model!(
 
     if gen_model isa ClassicalFullBusModel || gen_model isa DqFullBusModel
         steady_state_hints === nothing && throw(ArgumentError(
-            "FULL_BUS requires SteadyStateHints (from ACOPF warm start or flat start)."))
+            "FULL_BUS requires SteadyStateHints from the mandatory ACOPF warm start."))
         model, dyn_model_dict, dyn_parameters_dict = assemble_dynamic_model!(
             gen_model, model, opf_dict, path_names, DBUS, DGEN, DGEN_DYN, DCIR,
             bus_gen_circ_dict_ON, base_MVA, nBUS, nGEN, nCIR, ts_fault_details;
             simulation=transient.simulation,
             ts_builder=transient.builder,
             steady_state_hints=steady_state_hints,
-            coupling_init_source=coupling_init_source,
             DGFM=DGFM)
     else
         model, dyn_model_dict, dyn_parameters_dict = assemble_dynamic_model!(

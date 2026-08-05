@@ -218,11 +218,27 @@ function fullbus_tsc_acopf_applicable(cfg)::Bool
     return cfg.transient.dyn_model.network_form == FULL_BUS
 end
 
-"""`true` when `save_warmstart_dispatch` applies to this run configuration."""
+"""
+`true` when `save_warmstart_dispatch` applies to this run configuration.
+
+Two TSC paths pre-solve a steady-state OPF before assembling the dynamics, and both
+have something worth archiving: FULL_BUS ACOPF (the warm-start operating point that
+seeds every coupling variable) and Kron TSC-DCOPF (the DC dispatch that fixes the
+Taylor anchor `δ_ref`). Kron TSC-ACOPF solves once, jointly, so there is no pre-solve
+to save.
+"""
 function warmstart_dispatch_applicable(cfg)::Bool
     cfg.save_warmstart_dispatch || return false
-    cfg.use_acopf_warmstart || return false
-    return fullbus_tsc_acopf_applicable(cfg)
+    fullbus_tsc_acopf_applicable(cfg) && return true
+    return dcopf_tsc_presolve_applicable(cfg)
+end
+
+"""`true` when this run is a TSC-DCOPF whose DC pre-solve produces `δ_ref`."""
+function dcopf_tsc_presolve_applicable(cfg)::Bool
+    cfg.trans_stab || return false
+    cfg.dispatch.type_model == "DCOPF" || return false
+    cfg.transient === nothing && return false
+    return cfg.transient.dyn_model.network_form == KRON_REDUCED
 end
 
 """Remap dispatch path keys to `Dispatch_WarmStart/` (mirrors `dispatch_dual_path_names`)."""

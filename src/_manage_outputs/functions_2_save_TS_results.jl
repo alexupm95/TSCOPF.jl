@@ -244,9 +244,20 @@ function _export_mech_power_mode_label(dyn_model_dict::OrderedDict{Symbol, Any})
     end
 end
 
+"""
+Model-metadata block printed once at the top of `dynamic_model_details.txt`.
+
+Shared by the Kron, Kron-linear and FULL_BUS exports, so the constraint listings that
+follow are never interrupted by configuration lines. `bound_style` names the δ-COI
+constraint form that was actually built, and the ZIP splits (FULL_BUS only) describe the
+load model inside the nodal balances — neither is recorded anywhere else in the results
+tree.
+"""
 function _export_dyn_meta_header(dyn_model_dict::OrderedDict{Symbol, Any})::Vector{String}
     lines = String[_export_mech_power_mode_label(dyn_model_dict)]
     meta = get(dyn_model_dict, :meta, OrderedDict{Symbol, Any}())
+    haskey(meta, :bound_style) && push!(lines, "bound_style: $(meta[:bound_style])")
+    haskey(meta, :ode_first_step) && push!(lines, "ode_first_step: $(meta[:ode_first_step])")
     if get(meta, :constrain_Δω_COI, false)
         # Signed pair — may be asymmetric (Δω_tol_pu_lower / Δω_tol_pu_upper).
         lo, hi = meta[:Δω_tol]
@@ -254,14 +265,17 @@ function _export_dyn_meta_header(dyn_model_dict::OrderedDict{Symbol, Any})::Vect
     else
         push!(lines, "constrain_Δω_COI: false")
     end
+    haskey(meta, :zip_load_p) && push!(lines, "zip_load_p (Z,I,P): $(meta[:zip_load_p])")
+    haskey(meta, :zip_load_q) && push!(lines, "zip_load_q (Z,I,P): $(meta[:zip_load_q])")
     return lines
 end
 
 """Metadata for pre-fault coupling exports (TXT header + CSV provenance)."""
 function _prefault_coupling_metadata(dyn_model_dict::OrderedDict{Symbol, Any})
     meta = get(dyn_model_dict, :meta, OrderedDict{Symbol, Any}())
-    init_src = get(meta, :coupling_init_source,
-        get(meta, :acopf_warm_start, false) ? "acopf_warmstart" : "flat_start")
+    # Only the FULL_BUS builders record a coupling source; the Kron paths seed
+    # constants and never reach the pre-fault starts export.
+    init_src = get(meta, :coupling_init_source, "none")
     return (
         gen_order = string(get(meta, :gen_order, "CLASSICAL_2ND")),
         network_form = string(get(meta, :network_form, "KRON_REDUCED")),
@@ -1303,13 +1317,10 @@ function Export_Dynamic_Model_fullbus(
         println(io, "============================================================")
         println(io, "FULL_BUS network-specific variables and constraints (appendix)")
         println(io, "============================================================")
+        # Model metadata (bound_style, ZIP splits, …) is printed once by
+        # `_export_dyn_meta_header` at the top of the file, not here between the
+        # shared constraint listing and the network one.
         println(io, "network_form: FULL_BUS")
-        if haskey(dyn_model_dict, :meta)
-            meta = dyn_model_dict[:meta]
-            haskey(meta, :bound_style) && println(io, "bound_style: ", meta[:bound_style])
-            haskey(meta, :zip_load_p) && println(io, "zip_load_p (Z,I,P): ", meta[:zip_load_p])
-            haskey(meta, :zip_load_q) && println(io, "zip_load_q (Z,I,P): ", meta[:zip_load_q])
-        end
         println(io, "\n")
         _export_fullbus_network_appendix!(io, dyn_model_dict)
         _export_gfm_appendix!(io, dyn_model_dict)

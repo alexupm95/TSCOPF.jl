@@ -147,8 +147,7 @@ const cfg = RunConfig(
     save_matrices           = true,   # true = dump Ybus to XLSX
     save_ts_plots           = false,  # false = no trajectory figures; TSC-only and needs load_plots_extension!()
     save_ts_debug_csv       = false,  # false = no per-step diagnostic dumps; TSC-only anyway
-    save_warmstart_dispatch = false,  # false = no warm-start dump; only legal on FULL_BUS TSC-ACOPF
-    use_acopf_warmstart     = true,   # true is mandatory off the FULL_BUS TSC-ACOPF path; inert on a steady-state run
+    save_warmstart_dispatch = false,  # false = no warm-start dump; needs a TSC run with a steady-state pre-solve
 
     dispatch  = dispatch_cfg,  # the DispatchConfig instance built above
     transient = nothing,       # nothing = no transient avenue; REQUIRED when trans_stab = false

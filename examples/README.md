@@ -75,14 +75,14 @@ These are enforced at runtime and throw rather than silently degrading. Sources 
 | `allow_gfm` ⇒ `FULL_BUS` **and** `DQ_4TH` **and** not DC-OPF | No "2nd order + GFM" exists either. |
 | `include_governor` ⇒ `USE_PM` **and** `FULL_BUS` | The governor is legal on a 2nd-order machine (07), but not on Kron. |
 | `gen_order = DQ_4TH` ⇒ `FULL_BUS`, `USE_PM`, `bound_style = :coi_box` | The 4th-order machine has one legal network/mech/bound shape. |
-| `FULL_BUS` ⇒ `USE_PM` (builder), hence `:coi_box` | Thrown by the builder, not the validator. |
+| `FULL_BUS` ⇒ `USE_PM`, hence `:coi_box` | Checked before any solve; the builder repeats it as a backstop. |
+| `ode_first_step = :backward_euler` ⇒ `FULL_BUS` | The Kron swing rows are trapezoidal at every step, so Kron rejects it. |
 | TSC-DCOPF forbids `DQ_4TH`, `FULL_BUS` and `allow_gfm` | Kron + 2nd order is the only linearised shape. |
 | ACOPF and TSC-ACOPF forbid HiGHS and Gurobi | Nonconvex; needs Ipopt or MadNLP. |
 | `trans_stab` ⇒ `type_model ∈ ("ACOPF", "DCOPF")` | ED and UC have no transient path. |
 | `trans_stab = false` ⇒ `transient = nothing` | And `true` ⇒ `transient` set. |
 | `solve_explicit_dual` ⇒ ED or DC-OPF **and** `cost_type = "linear"` (DC-OPF also `use_matrix = true`) | Quadratic primals use `save_duals` instead. |
-| `use_acopf_warmstart = false` ⇒ FULL_BUS TSC-ACOPF | Everywhere else it must stay `true`. |
-| `save_warmstart_dispatch` ⇒ `trans_stab` + ACOPF + FULL_BUS + `use_acopf_warmstart` | Examples 06–13 only. |
+| `save_warmstart_dispatch` ⇒ a TSC run with a steady-state pre-solve | FULL_BUS TSC-ACOPF (06–13) or TSC-DCOPF (04). Rejected on Kron TSC-ACOPF. |
 | `save_ts_plots = true` ⇒ Plots loaded via `load_plots_extension!()` | Left `false` in every example. |
 
 ## Conventions used throughout

@@ -396,7 +396,6 @@ const cfg = RunConfig(
     # the value, its distance to the limit, and the dual. Large on sweeps.
     save_ts_debug_csv       = true,   # true = write the per-step GFM diagnostic CSVs
     save_warmstart_dispatch = true,   # true = archive the pre-TS ACOPF solution to Dispatch_WarmStart/
-    use_acopf_warmstart     = true,   # true = solve an ACOPF first and inject its V/θ/P_g/Q_g as start values
 
     dispatch  = dispatch_cfg,   # the DispatchConfig instance built above; also defines the warm-start problem
     transient = transient_cfg,  # the TransientConfig instance built above; REQUIRED when trans_stab = true

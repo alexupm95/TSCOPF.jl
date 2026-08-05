@@ -32,9 +32,8 @@ These fields apply to **both** plain OPF and TSC runs.
 | `save_optim_matrices` | `Bool` | `false` | Export Jacobian, Hessian, Lagrangian gradient as sparse COO CSV. **Steady-state only** — auto-forced `false` (with a warning) for TSC runs, where these matrices are huge. |
 | `save_matrices` | `Bool` | `true` | Steady-state only: write Ybus/Bbus XLSX to `Bus_Matrices/` when `type_model` is ACOPF or DCOPF. Ignored for ED and UC. TSC fault/post-fault matrices are always exported when `trans_stab=true` (folder created when `trans_stab` or steady-state `save_matrices` on ACOPF/DCOPF). |
 | `save_ts_plots` | `Bool` | `false` | TSC only: trajectory SVG figures under `Transient_Stability/Figures/`, plus the δ-COI dual figures under `Figures_Duals/` when `save_duals` is also on (opt-in; uses Plots.jl). CSV/TXT transient results are still saved when `trans_stab=true`. On a headless machine `load_plots_extension!` sets `GKSwstype=100` so GR writes to file instead of failing to open a window. |
-| `save_ts_debug_csv` | `Bool` | `false` | TSC only: per-(window, generator, step) diagnostic dumps under `Transient_Stability/CSV/Debug/` — value, distance to the limit and dual on one row. Writes `gfm_filter_debug.csv`, `gfm_limiter_debug.csv`, `gfm_voltage_debug.csv` (mixed-fleet runs) and `swing_debug.csv`. Opt-in: the filter file alone is three rows per converter per step. |
-| `save_warmstart_dispatch` | `Bool` | `false` | FULL_BUS TSC-ACOPF only: when `use_acopf_warmstart=true`, after the pre-TS ACOPF solve, write conventional dispatch reports to `Dispatch_WarmStart/` (same layout as `Dispatch/`). Dual export follows `save_duals`. Requires `use_acopf_warmstart=true`; throws on Kron or non-ACOPF TSC. |
-| `use_acopf_warmstart` | `Bool` | `true` | FULL_BUS TSC-ACOPF only: when `true` (default), solve steady-state ACOPF before TS assembly and seed coupling from the solution. When `false`, skip the pre-solve and use flat start (`V=1` p.u., `θ=0`, `P_g`/`Q_g` from case `pg_spe`/`qg_spe`) for JuMP `start=` hints only — convergence may be harder. |
+| `save_ts_debug_csv` | `Bool` | `false` | TSC only: per-(window, generator, step) diagnostic dumps under `Transient_Stability/CSV/Debug/` — value, distance to the limit and dual on one row. Writes `gfm_filter_debug.csv`, `gfm_limiter_debug.csv`, `gfm_voltage_debug.csv` (mixed-fleet runs) and `swing_debug.csv`. Opt-in: the filter file alone is three rows per converter per step. **`swing_debug.csv` uses the Greek variable names of the model (`δ_curr`, `Δω_step`, …) in its header.** The file is UTF-8 without a BOM, so opening it by double-click in Excel decodes it as ANSI and mangles those names; import it instead (Data → From Text/CSV → 65001 Unicode UTF-8). Every other exported CSV uses ASCII headers. |
+| `save_warmstart_dispatch` | `Bool` | `false` | TSC runs that pre-solve a steady-state OPF before assembling the dynamics: writes that solution to `Dispatch_WarmStart/` (same reports as `Dispatch/`; dual export follows `save_duals`). Two such paths — **FULL_BUS TSC-ACOPF** (the mandatory ACOPF warm start) and **Kron TSC-DCOPF** (the DC solve that fixes the Taylor anchor, which also writes `CSV/delta_ref.csv`). Throws on Kron TSC-ACOPF, which solves once jointly and has no pre-solve, and on steady-state runs. |
 | `dispatch` | `DispatchConfig` | `DispatchConfig()` | Avenue 1 — see §2 |
 | `transient` | `TransientConfig` or `nothing` | `nothing` | Avenue 2 — see §3; **required** when `trans_stab=true` |
 
@@ -510,7 +509,7 @@ supported on the FULL_BUS network path.
 |---|---|---|---|
 | `zip_load_p` | `(Float64,Float64,Float64)` | `(1,0,0)` | **Active**-demand `(Z,I,P)` = impedance / current / power fractions; **must sum to 1**; default = constant impedance |
 | `zip_load_q` | `(Float64,Float64,Float64)` | `(1,0,0)` | **Reactive**-demand `(Z,I,P)` split; independent of `zip_load_p`; **must sum to 1** |
-| `bound_style` | `Symbol` | `:swing_propagated` | `:coi_box` or `:swing_propagated` |
+| `bound_style` | `Symbol` | `:swing_propagated` | `:coi_box` = box the COI-relative angle directly, `δ_tol[1] ≤ δ_g − δ_COI ≤ δ_tol[2]`; `:swing_propagated` = substitute one swing step into that band, so the rows also carry `P_mech`, `Pe`, `Δω`, `ω_syn`, `Δt`. Honoured on **every** network form (Kron, Kron-linear, FULL_BUS): the two forms price differently, so a Kron-vs-FULL_BUS dual comparison must fix the same style on both sides. |
 | `constrain_Δω_COI` | `Bool` | `false` | Box on Δωᵢ − Δω_COI |
 | `Δω_tol_pu` | `Float64` | `0.5` | Symmetric half-width [p.u.] when lower/upper unset |
 | `Δω_tol_pu_lower` | `Float64` or `nothing` | `nothing` | Below-COI limit [p.u.]; default → `Δω_tol_pu` |
@@ -554,7 +553,8 @@ under- and over-frequency excursions carry different consequences.
     that silently means something different than you intended.
 
 - `USE_PM` **requires** `bound_style = :coi_box`
-- `FULL_BUS` **requires** `mech_power_mode = USE_PM`; ACOPF warm start is the default (`use_acopf_warmstart=true`) but optional (`false` → flat-start coupling hints)
+- `FULL_BUS` **requires** `mech_power_mode = USE_PM`, and always pre-solves the steady-state ACOPF that seeds the coupling variables (there is no flat-start alternative; a failed pre-solve aborts the run)
+- `ode_first_step = :backward_euler` **requires** `network_form = FULL_BUS` — the Kron swing rows are trapezoidal at every step, so the Kron paths reject it instead of silently ignoring it
 - `TSC-DCOPF` + `FULL_BUS` → **not implemented**
 - `zip_load_p` and `zip_load_q` coefficients must each sum to 1 (checked per vector)
 - `DQ_4TH` **requires** `FULL_BUS`, `mech_power_mode=USE_PM`, `bound_style=:coi_box`, and full machine columns in `gen_dynamic_data` (use `gen_dynamic_data_full.csv`)

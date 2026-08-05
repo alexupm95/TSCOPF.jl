@@ -107,6 +107,47 @@ end
         @test haskey(dmd[:ineq_const], :ineq_const_Qe_tf_upper)
     end
 
+    # `bound_style` used to be stored in meta and ignored: both Kron builders called the
+    # swing-propagated form unconditionally, so a run could report `coi_box` and contain
+    # the other constraint. The two forms are distinguishable in the exported model dump:
+    # the propagated bound substitutes one swing step, so its rows carry Pe and Δω terms,
+    # while the box is affine in δ and δCOI alone.
+    @testset "bound_style selects the δ-COI constraint form" begin
+        δ_coi_section(path) = begin
+            txt = read(joinpath(path, "dynamic_model_details.txt"), String)
+            i = findfirst("Inequality Constraints Angle in Relation to the COI", txt)
+            @test i !== nothing
+            txt[first(i):end]
+        end
+
+        # Baseline config is :coi_box (see main_style_tsc_kron_config).
+        res_box = run_tsc_builder_kron_case(main_style_tsc_kron_config())
+        @test res_box.status in KRON_TSC_SOLVED_STATUSES
+        @test res_box.dyn_model_dict[:meta][:bound_style] === :coi_box
+        box_txt = δ_coi_section(res_box.path_names[:pf_TS])
+        @test !occursin("Pe_tf", box_txt)
+        @test occursin("δCOI_tf", box_txt)
+
+        cfg_swing = reconfigure_dyn(main_style_tsc_kron_config();
+            dyn_model = DynModelConfig(
+                network_form = KRON_REDUCED,
+                mech_power_mode = USE_PG,          # USE_PM would force :coi_box
+                bound_style = :swing_propagated,
+                zip_load_p = (1.0, 0.0, 0.0),
+                zip_load_q = (1.0, 0.0, 0.0),
+                fault = FaultConfig(fault_type = SC, contingency_id = 2),
+            ))
+        res_swing = run_tsc_builder_kron_case(cfg_swing)
+        @test res_swing.status in KRON_TSC_SOLVED_STATUSES
+        @test res_swing.dyn_model_dict[:meta][:bound_style] === :swing_propagated
+        swing_txt = δ_coi_section(res_swing.path_names[:pf_TS])
+        @test occursin("Pe_tf", swing_txt)
+
+        # The model metadata block is printed once, at the top, and states what was built.
+        header = read(joinpath(res_box.path_names[:pf_TS], "dynamic_model_details.txt"), String)
+        @test occursin("bound_style: coi_box", header)
+    end
+
     @testset "GL gen trip — COI inertia over surviving set" begin
         cfg = reconfigure_dyn(main_style_tsc_kron_config();
             dyn_model = DynModelConfig(

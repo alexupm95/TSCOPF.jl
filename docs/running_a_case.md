@@ -206,8 +206,10 @@ which uses the flat `RESULTS/` tree with the same conditional rules).
 | `Dispatch/CSV/` | always | successful solve (primal dispatch CSV/XLSX/TXT) |
 | `Dispatch/model_details.txt`, `Dispatch/model_summary.txt` | always | at model build (objective, variables, constraints). Box limits appear as `ineq_const` rows when `bound_encoding = CONSTRAINT`, or as equivalent ≤-form lines from `bound_manifest` when `bound_encoding = VARIABLE`. |
 | `Dispatch/CSV_duals/` | `save_duals=true` | successful solve (JuMP primal dual CSV + `Dispatch_Duals.xlsx`) |
-| `Dispatch_WarmStart/`, `Dispatch_WarmStart/CSV/` | `save_warmstart_dispatch=true`, `use_acopf_warmstart=true`, and FULL_BUS TSC-ACOPF | successful warm-start ACOPF solve (before TS assembly); same reports as standalone ACOPF |
-| `Dispatch_WarmStart/CSV_duals/` | `save_warmstart_dispatch=true`, `use_acopf_warmstart=true`, and `save_duals=true` | warm-start ACOPF JuMP duals |
+| `Dispatch_WarmStart/`, `Dispatch_WarmStart/CSV/` | `save_warmstart_dispatch=true` and either FULL_BUS TSC-ACOPF or Kron TSC-DCOPF | successful pre-solve (before TS assembly); same reports as the standalone formulation |
+| `Dispatch_WarmStart/CSV/delta_ref.csv` | `save_warmstart_dispatch=true` and Kron TSC-DCOPF | the Taylor anchor $\delta_{ref}$ the linearised $P_e$ rows expand around |
+| `Dispatch_WarmStart/CSV_duals/` | `save_warmstart_dispatch=true` and `save_duals=true` | pre-solve JuMP duals |
+| `Dispatch_WarmStart/prefault_coupling_starts.{txt,csv}` | FULL_BUS TSC-ACOPF (independent of `save_warmstart_dispatch`) | after TS assembly, before the joint solve: the `start=` values the coupling variables were seeded with |
 | `Dispatch_Dual/` | `solve_explicit_dual=true` and `type_model` in `{"ED","DCOPF"}` | successful primal + explicit dual LP solve |
 | `Dispatch_Dual/CSV/`, `Dispatch_Dual/CSV_duals/` | same as `Dispatch_Dual/` | explicit dual LP outputs |
 | `Bus_Matrices/` | `type_model` in `{"ACOPF","DCOPF"}` and (`save_matrices=true` or `trans_stab=true`) | steady-state: Ybus/Bbus if `save_matrices`; TSC: fault/post-fault Y always when `trans_stab` |

@@ -380,13 +380,10 @@ function Define_Fault_Dynamic_Model_tsred!(model::JuMP.Model,
 
     attach_fault_tf_var_bounds!(model, dyn_model_dict)
 
-    build_lo, build_up = δ_COI_ineq_toggle_flags(dyn_model_dict, :tf)
-    if build_lo || build_up
-        lower, upper = ineq_const_kron_δ_COI_generic_modified!(model,
-            active_gen, DGEN_DYN, P_mech, δ_tf, δCOI_tf, Δω_tf, Pe_tf, time_window, δ_tol, δ_0, Δω_0, ω_syn, Δt;
-            build_lower=build_lo, build_upper=build_up)
-        store_δ_COI_ineq!(dyn_model_dict, :tf, lower, upper)
-    end
+    # δ-COI stability bounds (flavour set by `bound_style`).
+    _add_δ_COI_bounds_fault!(
+        model, dyn_model_dict, active_gen, DGEN_DYN, P_mech, δ_tf, δCOI_tf,
+        Δω_tf, Pe_tf, time_window, δ_tol, δ_0, Δω_0, ω_syn, Δt)
 
     if get(dyn_model_dict[:meta], :constrain_Δω_COI, false)
         Δω_tol = dyn_model_dict[:meta][:Δω_tol]
@@ -446,13 +443,9 @@ function Define_PostFault_Dynamic_Model_tsred!(model::JuMP.Model,
 
     attach_postfault_tpf_var_bounds!(model, dyn_model_dict)
 
-    build_lo, build_up = δ_COI_ineq_toggle_flags(dyn_model_dict, :tpf)
-    if build_lo || build_up
-        lower, upper = ineq_const_kron_δ_COI_generic_modified!(model,
-            active_gen, DGEN_DYN, P_mech, δ_tpf, δCOI_tpf, Δω_tpf, Pe_tpf, time_window, δ_tol, δ_ant, Δω_ant, Pe_ant, ω_syn, Δt;
-            build_lower=build_lo, build_upper=build_up)
-        store_δ_COI_ineq!(dyn_model_dict, :tpf, lower, upper)
-    end
+    _add_δ_COI_bounds_postf!(
+        model, dyn_model_dict, active_gen, DGEN_DYN, P_mech, δ_tpf, δCOI_tpf,
+        Δω_tpf, Pe_tpf, time_window, δ_tol, δ_ant, Δω_ant, Pe_ant, ω_syn, Δt)
 
     if get(dyn_model_dict[:meta], :constrain_Δω_COI, false)
         Δω_tol = dyn_model_dict[:meta][:Δω_tol]

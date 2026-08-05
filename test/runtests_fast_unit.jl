@@ -114,6 +114,24 @@ const INPUT_9BUS = fixture_case("9bus")
         bad_pm_swing = reconfigure_dyn(tsc_run_config();
             dyn_model = DynModelConfig(mech_power_mode = USE_PM, bound_style = :swing_propagated))
         @test_throws ArgumentError validate_dyn_config!(bad_pm_swing)
+
+        # FULL_BUS needs P_m as its own state. The builder also throws, but only after
+        # the warm-start ACOPF has been solved — this rule fires before any solve.
+        bad_fullbus_pg = reconfigure_dyn(tsc_run_config();
+            dyn_model = DynModelConfig(network_form = FULL_BUS, mech_power_mode = USE_PG))
+        @test_throws ArgumentError validate_dyn_config!(bad_fullbus_pg)
+
+        # Backward Euler has no Kron implementation (those swing rows are trapezoidal
+        # at every step), so asking for it must fail rather than be silently ignored.
+        bad_kron_be = reconfigure_dyn(tsc_run_config();
+            dyn_model = DynModelConfig(network_form = KRON_REDUCED,
+                ode_first_step = :backward_euler))
+        @test_throws ArgumentError validate_dyn_config!(bad_kron_be)
+
+        ok_fullbus_be = reconfigure_dyn(tsc_run_config();
+            dyn_model = DynModelConfig(network_form = FULL_BUS, mech_power_mode = USE_PM,
+                bound_style = :coi_box, ode_first_step = :backward_euler))
+        @test validate_dyn_config!(ok_fullbus_be) === nothing
     end
 
     @testset "dynamic_gen_model factory" begin
@@ -216,6 +234,7 @@ const INPUT_9BUS = fixture_case("9bus")
     end
 
     @testset "save_warmstart_dispatch validation" begin
+        # Kron TSC-ACOPF solves once, jointly: there is no pre-solve to archive.
         cfg_kron = RunConfig(
             trans_stab = true,
             dispatch = DispatchConfig(type_model = "ACOPF"),
@@ -224,38 +243,31 @@ const INPUT_9BUS = fixture_case("9bus")
         )
         @test_throws ArgumentError validate_run_config!(cfg_kron)
 
-        cfg_no_ws = RunConfig(
-            trans_stab = true,
+        # Steady-state runs have no TS assembly, hence no warm start either.
+        cfg_dispatch_only = RunConfig(
             dispatch = DispatchConfig(type_model = "ACOPF"),
-            transient = TransientConfig(
-                dyn_model = DynModelConfig(network_form = FULL_BUS)),
-            use_acopf_warmstart = false,
             save_warmstart_dispatch = true,
         )
-        @test_throws ArgumentError validate_run_config!(cfg_no_ws)
+        @test_throws ArgumentError validate_run_config!(cfg_dispatch_only)
 
-        cfg_kron_flat = RunConfig(
+        # The two paths that do pre-solve: FULL_BUS TSC-ACOPF and TSC-DCOPF (δ_ref).
+        cfg_fullbus = RunConfig(
             trans_stab = true,
             dispatch = DispatchConfig(type_model = "ACOPF"),
-            transient = TSCOPF.default_transient_config(),
-            use_acopf_warmstart = false,
+            transient = TransientConfig(dyn_model = DynModelConfig(
+                network_form = FULL_BUS, mech_power_mode = USE_PM, bound_style = :coi_box)),
+            save_warmstart_dispatch = true,
         )
-        @test_throws ArgumentError validate_run_config!(cfg_kron_flat)
-    end
+        @test validate_run_config!(cfg_fullbus) === nothing
 
-    @testset "build_flat_start_hints" begin
-        cfg = RunConfig(case = "9bus", trans_stab = true,
-            transient = TransientConfig(dyn_model = DynModelConfig(network_form = FULL_BUS)))
-        sys = load_fixture_system(cfg)
-        hints = build_flat_start_hints(sys.DBUS, sys.DGEN, cfg.base_MVA)
-        @test hints.val_V[1] ≈ 1.0
-        @test hints.val_θ[1] ≈ 0.0
-        active = findall(==(1), sys.DGEN.g_status)
-        for gen in active
-            gid = Int(sys.DGEN.id[gen])
-            @test hints.val_Pg[gid] ≈ sys.DGEN.pg_spe[gen] / cfg.base_MVA
-            @test hints.val_Qg[gid] ≈ sys.DGEN.qg_spe[gen] / cfg.base_MVA
-        end
+        cfg_dcopf = RunConfig(
+            trans_stab = true,
+            solver_name = "HiGHS",
+            dispatch = DispatchConfig(type_model = "DCOPF"),
+            transient = TSCOPF.default_transient_config(),
+            save_warmstart_dispatch = true,
+        )
+        @test validate_run_config!(cfg_dcopf) === nothing
     end
 
     @testset "DispatchLimitsConfig" begin
