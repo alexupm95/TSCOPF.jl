@@ -4,6 +4,34 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Unit commitment was broken with Gurobi 13: `GurobiSolverConfig.optimality_target`
+  now defaults to `-1` instead of `1`.** `apply_gurobi_options!` stamps
+  `OptimalityTarget` onto every Gurobi model. Gurobi 13 renumbered that parameter —
+  it accepts only `-1` (automatic), `0` (global) and `1` (**local**), where older
+  releases used `1` for global and `2`/`3` for local. The old default therefore
+  selected *local* optimization, and Gurobi refuses to combine that with integer
+  variables:
+
+  ```
+  Gurobi Error 10016: Local optimization cannot be used for discrete problems
+  or SOS constraints
+  ```
+
+  Every UC run through Gurobi 13 failed on this, regardless of licence. LP paths
+  (DC-OPF, ED, the explicit dual LPs) were unaffected in result, since local and
+  global coincide on a convex problem.
+
+  The bug stayed hidden because `runtests_uc.jl` only executes when Gurobi is in the
+  test environment, which never happens on CI (`scripts/setup_test_env.jl` skips it
+  there) and had not happened locally.
+
+  Do not pin this parameter to a number unless you know what your Gurobi version
+  means by it; the validation range (`-1:3`) is deliberately permissive across
+  versions, and the setter is best-effort, so a value your Gurobi rejects is ignored
+  rather than fatal.
+
 ### Added
 
 - **`DynModelConfig.gfm_integrator` — the GFM measurement filters and Q–V PI integrator

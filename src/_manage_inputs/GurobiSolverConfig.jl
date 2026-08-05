@@ -15,7 +15,14 @@ Gurobi options for LP/QP/MILP (and nonlinear when licensed) runs
 parameter (e.g. `"Threads" => 4`).
 
 Defaults match the typed knobs below (`MIPGap = 1e-8`, NL barrier tolerances,
-`OptimalityTarget = 1`).
+`OptimalityTarget = -1`, i.e. left to Gurobi).
+
+!!! warning "`OptimalityTarget` numbering is not stable across Gurobi versions"
+    Gurobi 13 accepts only `-1` (automatic), `0` (global) and `1` (**local**),
+    where older releases used `1` for global and `2`/`3` for local. Selecting
+    local optimization makes Gurobi reject *any* discrete model with
+    `Error 10016`, which breaks unit commitment. The default is therefore `-1`:
+    do not pin a number unless you know what your Gurobi version means by it.
 """
 Base.@kwdef struct GurobiSolverConfig
     # Logging
@@ -32,7 +39,11 @@ Base.@kwdef struct GurobiSolverConfig
     nl_bar_p_feas_tol::Float64 = 1e-8
     nl_bar_d_feas_tol::Float64 = 1e-8
     nl_bar_c_feas_tol::Float64 = 1e-8
-    optimality_target::Int = 1
+    # -1 = leave it to Gurobi. Do NOT default this to a number: the parameter was
+    # renumbered in Gurobi 13, where 1 means LOCAL optimization and makes Gurobi
+    # reject every discrete model with "Error 10016: Local optimization cannot be
+    # used for discrete problems or SOS constraints" — which silently broke UC.
+    optimality_target::Int = -1
     raw_options::Dict{String, Any} = Dict{String, Any}()
 end
 

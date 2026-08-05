@@ -501,7 +501,10 @@ const INPUT_9BUS = fixture_case("9bus")
         @test defaults.nl_bar_p_feas_tol == 1e-8
         @test defaults.nl_bar_d_feas_tol == 1e-8
         @test defaults.nl_bar_c_feas_tol == 1e-8
-        @test defaults.optimality_target == 1
+        # Must stay -1 ("leave it to Gurobi"). Pinning a number here is what broke
+        # UC: Gurobi 13 renumbered OptimalityTarget so that 1 means LOCAL, and
+        # local optimization rejects every discrete model with Error 10016.
+        @test defaults.optimality_target == -1
         @test_throws ArgumentError validate_gurobi_solver_config!(
             GurobiSolverConfig(nl_bar_iter_limit = 0))
         @test_throws ArgumentError validate_gurobi_solver_config!(
