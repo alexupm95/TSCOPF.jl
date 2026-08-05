@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  # Heavy tier on demand …
+  workflow_dispatch:
+  # … and once a night, so DQ_4TH / AVR / governor / GL-OB / A6 regressions are
+  # caught within a day without slowing every push.
+  schedule:
+    - cron: "0 3 * * *"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Headless GR backend for the Plots-extension SVG smoke test. Dropped by
+  # mistake in 3df96cb (the commit that ADDED the Plots extension); without it
+  # GR tries to open a display and the test errors on the runner.
+  GKSwstype: "100"
+  JULIA_NUM_THREADS: auto
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Fast gate — every push and PR. Target ≤ 12 min.
+  # Unit tests, config validation, cheap LP/Kron/ACOPF solves, one FULL_BUS
+  # structural solve. See test/README.md for what lands in which tier.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Fast gate — Julia ${{ matrix.version }} - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # CI validates Julia 1.11 (local dev version). Package compat remains julia = "1.10".
+        version:
+          - "1.11"
+        os:
+          - ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.version }}
+      - uses: julia-actions/cache@v2
+      - name: Instantiate package
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+      - name: Bootstrap test/Project.toml
+        run: julia scripts/setup_test_env.jl
+      - name: Instantiate test environment
+        run: julia --project=test -e 'using Pkg; Pkg.instantiate()'
+      - name: Run Pkg.test() — fast gate
+        run: julia --project=. -e 'using Pkg; Pkg.test()'
+
+  # ---------------------------------------------------------------------------
+  # Heavy tier — nightly and on manual dispatch only. Adds the DQ_4TH machine,
+  # AVR/governor end-to-end solves, GL/OB disturbances, and the A6 numeric pin.
+  # ---------------------------------------------------------------------------
+  heavy:
+    name: Heavy tier (TSCOPF_RUN_HEAVY)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.11"
+      - uses: julia-actions/cache@v2
+      - name: Instantiate package
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+      - name: Bootstrap test/Project.toml
+        run: julia scripts/setup_test_env.jl
+      - name: Instantiate test environment
+        run: julia --project=test -e 'using Pkg; Pkg.instantiate()'
+      - name: Run Pkg.test() — heavy tier
+        env:
+          TSCOPF_RUN_HEAVY: "true"
+          TSCOPF_RUN_PM_CROSSCHECK: "true"
+        run: julia --project=. -e 'using Pkg; Pkg.test()'

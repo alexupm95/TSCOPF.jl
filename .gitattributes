@@ -1,0 +1,4 @@
+# Shell scripts must keep LF line endings. This repository is developed on
+# Windows with core.autocrlf=true, which would otherwise check them out with
+# CRLF and break them under bash ("$'\r': command not found").
+*.sh text eol=lf
