@@ -65,6 +65,27 @@ All notable changes to this project are documented here. Format follows [Keep a 
   instead of appearing between the shared constraint block and the FULL_BUS
   network block.
 
+- **The turbine governor was missing from `dynamic_model_details.txt` on the
+  classical FULL_BUS path.** The appendix that prints the machine and control
+  constraint families returned early unless `gen_order = DQ_4TH`, but TGOV1
+  attaches on `CLASSICAL_2ND` FULL_BUS as well. A classical run with
+  `include_governor` produced a dump with no governor rows at all — the valve and
+  mechanical-power ODEs, the `P_ref` set-point pin, and, under `GOV_SMOOTH`, the
+  anti-windup softsat equality (`eq_const_gov_valve_limit_tf/tpf`). Only the TXT
+  audit trail was affected: the dual export and the trajectory CSVs take separate
+  paths and were always complete, which is what made the gap easy to miss. The
+  `gen_order` gate is gone; every family in the appendix was already selected by
+  `haskey`, so the dq and AVR keys stay absent on a classical run without it.
+
+  Two related gaps in the same export, found while tracing the first: the governor
+  *variables* (`P_ref`, and `P_valve_raw` / `P_valve` / `P_mech` per window) reached
+  no variable listing on **any** path, dq included, because the listing only carried
+  the dq machine and GFM stems; and the explicit valve bounds emitted by
+  `GOV_HARD_BOUND` under the `CONSTRAINT` encoding
+  (`ineq_const_gov_valve_<win>_<side>`) were never printed either. Both are listed
+  now. Under the `VARIABLE` encoding those bounds still live on `P_valve_raw` and
+  remain the business of `variable_bounds.txt`.
+
 - **Versioned documentation never deployed: the `Documentation` workflow raced
   itself on every release.** A release pushes `main` and the version tag in one
   `git push`, firing two workflow runs simultaneously. The concurrency group was
@@ -104,6 +125,80 @@ All notable changes to this project are documented here. Format follows [Keep a 
   means by it; the validation range (`-1:3`) is deliberately permissive across
   versions, and the setter is best-effort, so a value your Gurobi rejects is ignored
   rather than fatal.
+
+- **A machine CSV missing the columns the selected dynamic model needs now fails
+  validation instead of reaching the builders.** `include_governor = true` against a
+  `gen_dynamic_filename` with no `R`, `T1`, `T2`, `T3` raised nothing during the sanity
+  checks. `Parse_Gen_Dynamic_DataFrame` pre-fills every optional column with `NaN` and
+  overwrites only the ones the file carries, so `DGEN_DYN.R` always exists and is simply
+  `NaN` on a minimal file. Those `NaN`s reached the governor builder and became JuMP
+  constraint coefficients.
+
+  The guard already existed (`has_required_dyn_columns` / `required_dyn_column_names`,
+  which appends `R`, `T1`, `T2`, `T3` under `include_governor`) but was wired to
+  `gen_order == DQ_4TH`, so the classical second-order FULL_BUS path skipped it
+  entirely; on the DQ path it fired only after the warm-start ACOPF had solved, and
+  named neither the flag nor the file.
+
+  `validate_dyn_data!(cfg, DGEN_DYN)` now runs in the sanity block of `run_case!` next
+  to `validate_fault_config!`. It covers the whole union of required columns (dq set,
+  AVR, governor) and reports which columns are missing, which knob requires them, and
+  the filename you configured:
+
+  ```
+  gen_dynamic_data.csv is missing machine data required by the selected
+  dynamic model: R, T1, T2, T3 (required by include_governor=true).
+  Columns must be present and finite for every generator row.
+  ```
+
+  `missing_dyn_columns` is the new primitive; `has_required_dyn_columns` becomes
+  `isempty(missing_dyn_columns(...))`, so there is one predicate rather than two that
+  can disagree. The DQ-only check in the build block is deleted as superseded. The
+  builder-level guard in the DQ FULL_BUS builder stays, since it protects callers that
+  bypass `run_case!`.
+
+- **Blank cells in a machine CSV no longer kill the parser before validation can speak.**
+  A generator with governor columns present but empty (`R;;;;`) never reached
+  `validate_dyn_data!`. CSV.jl types a column with any empty cell as
+  `Union{Missing, Float64}`, so `Float64.(col)` threw first:
+
+  ```
+  MethodError: no method matching Float64(::Missing)
+  ```
+
+  which names neither the column nor the generator row. The optional columns and the
+  `Float64` mandatory ones (`Xd_tr`, `H`, `D`) now route through `_gen_dyn_float`, which
+  maps `missing` to `NaN`. A blank cell is then indistinguishable from an absent column
+  downstream, and both spellings produce the same diagnostic. `bus` keeps its strict
+  `Int64` conversion: an index has no `NaN` sentinel, so a blank there is a malformed
+  file with nothing to defer to validation.
+
+  This matters because `include_governor` is fleet-wide. The governor builders loop over
+  every `active_gen`, so a partly-filled column is a genuine error rather than a per-unit
+  opt-out.
+
+### Changed
+
+- **The two DC susceptance builders collapsed into one.** `Calculate_Matrix_B` and
+  `Calculate_Matrix_B_PowerModels` were identical apart from the per-branch kernel, which
+  `dc_branch_susceptance` already computes for both models. `Calculate_Matrix_B` now
+  takes a `susceptance_model` keyword and broadcasts that helper; the PowerModels entry
+  point is a thin alias, since tests and docs reference it by name.
+
+  The helper's `r` / `x` annotations loosen from `Float64` to `Real`: the old builders
+  used a `@.` expression that accepted integer-typed reactance columns, and the broadcast
+  form would otherwise `MethodError` on them.
+
+- **The dq builders return NamedTuples.** Four of them returned bare 4-, 5-, 7- and
+  8-element tuples whose elements are all `OrderedDict`s of `VariableRef` or
+  `ConstraintRef`. Sibling builders differ in arity (`var_dq_gen_state_time!` carries
+  `Te`, its pre-fault counterpart does not), and adjacent elements are interchangeable to
+  the compiler, so a positional slip built a silently wrong model rather than raising.
+  That is the fragility behind the earlier Kron rotor-angle regression.
+
+  The six call sites in the DQ FULL_BUS builder now bind by field name: property
+  destructuring where the local names already match, explicit field access where the
+  locals carry `_tf` / `_tpf` suffixes. No constraint, variable or export key changes.
 
 ### Added
 

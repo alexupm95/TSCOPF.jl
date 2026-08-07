@@ -190,10 +190,23 @@ end
 
 # --- validation ---------------------------------------------------------------
 
+"""
+Columns required by `dyn` that `DGEN_DYN` does not usably provide — either absent
+altogether or present with a non-finite entry on some generator row.
+
+The two failures are one bucket on purpose: `Parse_Gen_Dynamic_DataFrame` pre-fills
+every optional column with `NaN` and overwrites only the ones the CSV actually
+carries, so a missing column is indistinguishable from a `NaN`-valued one by the
+time anything downstream reads it — and both are equally fatal.
+"""
+function missing_dyn_columns(dyn::DynModelConfig, DGEN_DYN::DataFrame)::Vector{Symbol}
+    return Symbol[col for col in required_dyn_column_names(dyn)
+                  if !(col in propertynames(DGEN_DYN)) || !all(isfinite, DGEN_DYN[!, col])]
+end
+
 """Return `true` when every optional machine column needed by `dyn` is finite."""
 function has_required_dyn_columns(dyn::DynModelConfig, DGEN_DYN::DataFrame)::Bool
-    req = required_dyn_column_names(dyn)
-    return all(col -> col in propertynames(DGEN_DYN) && all(isfinite, DGEN_DYN[!, col]), req)
+    return isempty(missing_dyn_columns(dyn, DGEN_DYN))
 end
 
 """Canonical DataFrame column names required for the chosen dynamic configuration."""
@@ -210,6 +223,29 @@ function required_dyn_column_names(dyn::DynModelConfig)::Vector{Symbol}
         append!(cols, [:R, :T1, :T2, :T3])
     end
     return unique(cols)
+end
+
+# Why each machine column is required, read in the opposite direction from
+# `required_dyn_column_names` above. Kept adjacent so the two never drift.
+const _DYN_COLUMN_REASON = Dict{Symbol, String}(
+    :bus => "the classical 2nd-order machine", :Xd_tr => "the classical 2nd-order machine",
+    :H => "the classical 2nd-order machine",   :D => "the classical 2nd-order machine",
+    :Xq_tr => "gen_order=DQ_4TH", :Xd => "gen_order=DQ_4TH", :Xq => "gen_order=DQ_4TH",
+    :Td => "gen_order=DQ_4TH",    :Tq => "gen_order=DQ_4TH", :Ra => "gen_order=DQ_4TH",
+    :T_exc => "include_avr=true", :K_exc => "include_avr=true",
+    :R => "include_governor=true", :T1 => "include_governor=true",
+    :T2 => "include_governor=true", :T3 => "include_governor=true",
+)
+
+"""
+Distinct reasons `cols` are required, in first-appearance order — e.g.
+`["include_governor=true"]`, or `["gen_order=DQ_4TH", "include_avr=true"]` when a
+run is short of both families. Used to explain *which knob* demands a column the
+machine CSV does not carry.
+"""
+function dyn_column_reasons(cols::AbstractVector{Symbol})::Vector{String}
+    return unique(String[get(_DYN_COLUMN_REASON, col, "the selected dynamic model")
+                         for col in cols])
 end
 
 # validate_dyn_config!(cfg::RunConfig) lives in engine.jl (after RunConfig is defined).

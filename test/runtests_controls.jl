@@ -261,6 +261,18 @@ end
             @test haskey(dmd[:eq_const], :eq_const_gov_mech_tpf)
             @test haskey(dmd[:eq_const], :eq_const_Pm_init)   # governor self-pins P_m = P_g
 
+            # The TXT dump used to route the whole governor block through a
+            # `gen_order == DQ_4TH` gate, so a classical FULL_BUS run wrote a details
+            # file with no governor variables and no governor rows — including the
+            # GOV_SMOOTH anti-windup equality — while duals and CSVs were complete.
+            txt = read(joinpath(result.path_names[:pf_TS], "dynamic_model_details.txt"), String)
+            for marker in ("Governor Init — Set-point P_ref",
+                           "Governor Valve ODE (P_valve_raw)",
+                           "Governor Mech Power ODE (P_mech)",
+                           "P_ref[", "P_valve_raw_tf[", "P_mech_tpf[")
+                @test occursin(marker, txt)
+            end
+
             csv_dir  = result.path_names[:pf_TS_CSV]
             duals_dir = result.path_names[:pf_TS_CSV_duals]
             for f in ("governor_P_mech.csv", "governor_P_valve.csv", "governor_P_ref.csv")

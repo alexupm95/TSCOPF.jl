@@ -159,7 +159,7 @@ function dc_const_branch_thermal_limit_Bbus!(
 
             # Read the off-diagonal susceptance straight from Bbus so the thermal limit
             # uses exactly the same convention (SIMPLE 1/x or POWERMODELS x/(r²+x²)) that
-            # built Bbus — Bbus[i,k] = +b for a branch i→k in both Calculate_Matrix_B[_MATPOWER].
+            # built Bbus — Bbus[i,k] = +b for a branch i→k under either susceptance model.
             b  = Bbus[i, k]
 
             angik   = θ[i] - θ[k]                                  # Angular difference between bus i and k

@@ -312,6 +312,47 @@ function validate_dyn_config!(cfg::RunConfig)
     return nothing
 end
 
+"""
+    validate_dyn_data!(cfg::RunConfig, DGEN_DYN)
+
+Fail fast when the machine CSV named by `TransientConfig.gen_dynamic_filename` does
+not carry the columns the selected `DynModelConfig` needs — `R, T1, T2, T3` under
+`include_governor`, `T_exc, K_exc` under `include_avr`, the dq set under `DQ_4TH`.
+
+Separate from [`validate_dyn_config!`](@ref) because that one is config-only and
+runs before any data is read; this needs `DGEN_DYN`, so it runs from `run_case!`
+where `SystemData` is in hand — the same shape as `validate_fault_config!`.
+
+Without this the run would not fail at all on the classical path: the parser
+pre-fills absent optional columns with `NaN`, so `DGEN_DYN.R` exists whatever the
+file contains, and those `NaN`s get stamped straight into governor constraint
+coefficients.
+
+Every row is checked, out-of-service generators included — the same rule
+`has_required_dyn_columns` has always applied. Mixed SG + GFM fleets cannot
+false-positive here: grid-forming units live in `gfm_dynamic_data.csv` and are not
+rows of `DGEN_DYN`.
+"""
+function validate_dyn_data!(cfg::RunConfig, DGEN_DYN::Union{DataFrame, Nothing})
+    cfg.trans_stab || return nothing
+    dyn = cfg.transient.dyn_model
+    fname = cfg.transient.gen_dynamic_filename
+
+    DGEN_DYN === nothing && throw(ArgumentError(
+        "trans_stab=true requires generator dynamic data, but none was loaded " *
+        "(expected $fname). Build the SystemData with load_system on a TSC RunConfig."))
+
+    missing_cols = missing_dyn_columns(dyn, DGEN_DYN)
+    isempty(missing_cols) && return nothing
+
+    cols = join(string.(missing_cols), ", ")
+    why = join(dyn_column_reasons(missing_cols), ", ")
+    throw(ArgumentError(
+        "$fname is missing machine data required by the selected dynamic model: " *
+        "$cols (required by $why). Columns must be present and finite for every " *
+        "generator row."))
+end
+
 # ==============================================================================
 #  SystemData — network data loaded once, reused across a sweep
 # ==============================================================================
@@ -619,6 +660,9 @@ function run_case!(cfg::RunConfig, sys::SystemData,
     if cfg.trans_stab
         validate_fault_config!(
             cfg.transient.dyn_model.fault, sys.DGEN, sys.DBUS, sys.DCIR)
+        # Machine data must satisfy the selected dyn model before anything is built:
+        # a missing governor/AVR/dq column reaches the builders as NaN, not as an error.
+        validate_dyn_data!(cfg, sys.DGEN_DYN)
     end
 
     # Resolve the optimization-matrix export request. Forced false (with a warning)
@@ -721,12 +765,9 @@ function run_case!(cfg::RunConfig, sys::SystemData,
     dyn_model_dict = nothing
     dyn_parameters_dict = nothing
     if cfg.trans_stab
-        dyn = cfg.transient.dyn_model
-        if dyn.gen_order == DQ_4TH && !has_required_dyn_columns(dyn, sys.DGEN_DYN)
-            req = join(string.(required_dyn_column_names(dyn)), ", ")
-            throw(ArgumentError(
-                "DQ_4TH requires finite machine data columns in gen_dynamic_data: $req."))
-        end
+        # Machine-data columns were checked in the sanity block above (validate_dyn_data!),
+        # which covers every gen_order and control flag, not just DQ_4TH, and fires before
+        # the warm-start ACOPF solve rather than after it.
         # Factory dispatch (Phase 1.2): DCOPF → linearized Pe; ACOPF → nonlinear Pe
         linearize = type_model == "DCOPF"
         model, dyn_model_dict, dyn_parameters_dict = Build_Dynamic_Model!(

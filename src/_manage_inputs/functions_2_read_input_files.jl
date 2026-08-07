@@ -9,6 +9,13 @@ const _GEN_DYN_OPTIONAL_COLS = (
 """Normalise a CSV header string for column matching."""
 _normalize_gen_dyn_header(name) = lowercase(strip(string(name)))
 
+# CSV.jl types any column holding an empty cell as `Union{Missing, Float64}`. Map those
+# cells to NaN so a blank parameter is indistinguishable from an absent column downstream:
+# `validate_dyn_data!` then reports both spellings with the same message, naming the column
+# and the flag that requires it. Plain `Float64.(col)` instead dies here with a bare
+# `MethodError: no method matching Float64(::Missing)` that names neither.
+_gen_dyn_float(v)::Float64 = ismissing(v) ? NaN : Float64(v)
+
 """
     Parse_Gen_Dynamic_DataFrame(df_raw::DataFrame) -> DataFrame
 
@@ -17,7 +24,9 @@ Parse `gen_dynamic_data.csv` (minimal) or `gen_dynamic_data_full.csv` (dq/AVR/GV
 Minimal format (`bus;Xd;H;D`): `Xd` is mapped to `Xd_tr` (legacy convention).
 Legacy files may still include `Eg`; it is ignored (E is solved from init constraints).
 Full format keeps separate `Xd_tr` (transient) and `Xd` (synchronous) columns.
-Optional machine / control columns absent from the file are filled with `NaN`.
+Optional machine / control columns absent from the file are filled with `NaN`, and so
+are blank cells in a column that is present — a partly-filled parameter and a missing
+one are the same failure, reported together by `validate_dyn_data!`.
 """
 function Parse_Gen_Dynamic_DataFrame(df_raw::DataFrame)::DataFrame
     raw_headers = [_normalize_gen_dyn_header(n) for n in names(df_raw)]
@@ -84,10 +93,12 @@ function Parse_Gen_Dynamic_DataFrame(df_raw::DataFrame)::DataFrame
     end
 
     for i in 1:n
+        # `bus` stays a strict Int64 conversion — there is no NaN sentinel for an index,
+        # so a blank bus is a malformed file with nothing sensible to defer to validation.
         out.bus[i]    = Int64(df_raw[i, col_index["bus"]])
-        out.Xd_tr[i]  = Float64(df_raw[i, col_index["xd_tr"]])
-        out.H[i]      = Float64(df_raw[i, col_index["h"]])
-        out.D[i]      = Float64(df_raw[i, col_index["d"]])
+        out.Xd_tr[i]  = _gen_dyn_float(df_raw[i, col_index["xd_tr"]])
+        out.H[i]      = _gen_dyn_float(df_raw[i, col_index["h"]])
+        out.D[i]      = _gen_dyn_float(df_raw[i, col_index["d"]])
     end
 
     optional_map = Dict{String, Symbol}(
@@ -98,7 +109,7 @@ function Parse_Gen_Dynamic_DataFrame(df_raw::DataFrame)::DataFrame
     )
     for (key, sym) in optional_map
         if haskey(col_index, key)
-            out[!, sym] = Float64.(df_raw[!, col_index[key]])
+            out[!, sym] = _gen_dyn_float.(df_raw[!, col_index[key]])
         end
     end
 

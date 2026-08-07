@@ -174,15 +174,21 @@ end
 # Both reduce to 1/x when r = 0. Centralising the choice here keeps every DC flow
 # constraint and the post-solve flow report consistent with the selected model.
 # ============================================================================
-function dc_branch_susceptance(r::Float64, x::Float64, m::SusceptanceModel)
+function dc_branch_susceptance(r::Real, x::Real, m::SusceptanceModel)
     return m == POWERMODELS ? x / (r^2 + x^2) : 1 / x
 end
 
-# ===========================================
-# Function to calculate the suscptance matrix
-# b = 1 / (jX_L)
-# ===========================================
-function Calculate_Matrix_B(DBUS::DataFrame, DCIR::DataFrame, nBUS::Int64, nCIR::Int64)
+# ==========================================================================================
+# Function to calculate the bus susceptance matrix  B = A · diag(b_0) · Aᵀ
+#
+# The per-branch kernel is the one selected by `susceptance_model`, evaluated through
+# `dc_branch_susceptance` above so the matrix, the DC flow constraints and the post-solve
+# flow report can never drift apart:
+#   SIMPLE      : b_0 = -status / x                (textbook DC)
+#   POWERMODELS : b_0 = -status · x / (r² + x²)    (imag(1/(r+jx)); equals -1/x when r = 0)
+# ==========================================================================================
+function Calculate_Matrix_B(DBUS::DataFrame, DCIR::DataFrame, nBUS::Int64, nCIR::Int64;
+                            susceptance_model::SusceptanceModel = SIMPLE)
     # DBUS is the array related to the bus data
     # DCIR is the array related to the circuit data
     # nBUS is the number of buses
@@ -194,8 +200,9 @@ function Calculate_Matrix_B(DBUS::DataFrame, DCIR::DataFrame, nBUS::Int64, nCIR:
     # sparse([Row Indices], [Column Indices], [Value], [Total Number of Rows], [Total Number of Columns])
     A = SparseArrays.sparse(DCIR.from_bus, 1:nCIR, 1, nBUS, nCIR) + SparseArrays.sparse(DCIR.to_bus, 1:nCIR, -1, nBUS, nCIR)
 
-    # Create a vector with the susceptance values of each line B = -1/x
-    B_0 = @. - DCIR.l_status / (DCIR.l_reac)
+    # Create a vector with the susceptance values of each line (out-of-service branches drop
+    # out through l_status). `Ref` keeps the enum scalar under broadcasting.
+    B_0 = .- DCIR.l_status .* dc_branch_susceptance.(DCIR.l_res, DCIR.l_reac, Ref(susceptance_model))
 
     # Once we have the Incidence Matrix "A" and the Susceptance vector "B_0",
     # we can construct the Susceptance Matrix "B":
@@ -206,33 +213,9 @@ function Calculate_Matrix_B(DBUS::DataFrame, DCIR::DataFrame, nBUS::Int64, nCIR:
     return B
 end
 
-# ===========================================
-# Function to calculate the susceptance matrix according to the PowerModels formulation
-# b = -x / (r² + x²)   (i.e. imag(1/(r+jx)); coincides with -1/x when r = 0)
-# ===========================================
-function Calculate_Matrix_B_PowerModels(DBUS::DataFrame, DCIR::DataFrame, nBUS::Int64, nCIR::Int64)
-    # DBUS is the array related to the bus data
-    # DCIR is the array related to the circuit data
-    # nBUS is the number of buses
-    # nCIR is the number of circuits
-
-    # From the terminal nodes of each line (from_bus and to_bus), we create the incidence matrix,
-    # where we assign 1 to from_bus nodes and -1 to to_bus nodes.
-    # For the sparse function in SparseArrays, the arguments are:
-    # sparse([Row Indices], [Column Indices], [Value], [Total Number of Rows], [Total Number of Columns])
-    A = SparseArrays.sparse(DCIR.from_bus, 1:nCIR, 1, nBUS, nCIR) + SparseArrays.sparse(DCIR.to_bus, 1:nCIR, -1, nBUS, nCIR)
-
-    # Create a vector with the susceptance values of each line B = -x/(r²+x²)
-    B_0 = @. - (DCIR.l_status * DCIR.l_reac) / (DCIR.l_res^2 + DCIR.l_reac^2)
-
-    # Once we have the Incidence Matrix "A" and the Susceptance vector "B_0",
-    # we can construct the Susceptance Matrix "B":
-    B = A * SparseArrays.spdiagm(B_0) * A'
-    # Here, spdiagm creates a sparse matrix and assigns the elements of vector B to the main diagonal
-
-    # Return the susceptance matrix
-    return B
-end
+# Thin alias kept because the PowerModels variant is referenced by name in the tests and docs.
+Calculate_Matrix_B_PowerModels(DBUS::DataFrame, DCIR::DataFrame, nBUS::Int64, nCIR::Int64) =
+    Calculate_Matrix_B(DBUS, DCIR, nBUS, nCIR; susceptance_model = POWERMODELS)
 
 # =====================================================================================
 # Function to calculate the Inverse of the Susceptance Matrix using Sparsity techniques

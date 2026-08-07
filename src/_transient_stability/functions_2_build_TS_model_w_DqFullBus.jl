@@ -357,7 +357,7 @@ function Define_Initial_Condition_4_dq!(
         δ = store_ts_scalar_var_bounds!(dyn_model_dict, :δ, result, :ineq_const_δ_lower, :ineq_const_δ_upper)
     end
 
-    Ed, Eq, Id, Iq = var_dq_prefault_algebraic!(model, sg_gens)
+    (; Ed, Eq, Id, Iq) = var_dq_prefault_algebraic!(model, sg_gens)
     dyn_model_dict[:vars][:Ed] = Ed
     dyn_model_dict[:vars][:Eq] = Eq
     dyn_model_dict[:vars][:Id] = Id
@@ -377,7 +377,7 @@ function Define_Initial_Condition_4_dq!(
     _set_dq_init_warm_starts!(E_fd, δ, Ed, Eq, Id, Iq, P_m, sg_gens, DGEN, DGEN_DYN,
         val_V, val_θ, val_Pg, val_Qg)
 
-    eq_Ed, eq_Eq, eq_Vd, eq_Vq, eq_P, eq_Q, Vd_init, Vq_init =
+    (; eq_Ed, eq_Eq, eq_Vd, eq_Vq, eq_P, eq_Q, Vd_init, Vq_init) =
         eq_const_dq_init_steady_state!(
             model, sg_gens, DGEN, DGEN_DYN, V, θ, P_g, Q_g, E_fd, δ, Ed, Eq, Id, Iq)
     dyn_model_dict[:eq_const][:eq_const_Ed_init] = eq_Ed
@@ -463,9 +463,10 @@ function Define_Fault_Dynamic_Model_dq!(
     Qe_tf = var_fullbus_gen_Qe_time!(model, active_gen, time_window, val_Qg; suffix="tf")
     δ_tf = var_fullbus_gen_rotor_angle_time!(model, active_gen, time_window, δ_0; suffix="tf")
     Δω_tf = var_fullbus_gen_speed_dev_time!(model, active_gen, time_window; suffix="tf")
-    Ed_tf, Eq_tf, Id_tf, Iq_tf, Te_tf = var_dq_gen_state_time!(
+    dq_tf = var_dq_gen_state_time!(
         model, active_gen, time_window, δ_0, Ed_0, Eq_0, Id_0, Iq_0, val_Pg;
         suffix="tf", emf_gens=sg_gens)
+    Ed_tf, Eq_tf, Id_tf, Iq_tf, Te_tf = dq_tf.Ed, dq_tf.Eq, dq_tf.Id, dq_tf.Iq, dq_tf.Te
 
     dyn_model_dict[:vars][:V_tf] = V_tf
     dyn_model_dict[:vars][:θ_tf] = θ_tf
@@ -502,24 +503,23 @@ function Define_Fault_Dynamic_Model_dq!(
                 model, sg_gens, Δω_tf, ΔωCOI_tf, time_window, Δω_tol)
     end
 
-    eq_Pe, eq_Qe, eq_Vd, eq_Vq, eq_Te, Vd_expr_tf, Vq_expr_tf =
-        eq_const_dq_machine_algebra!(
-            model, sg_gens, DGEN, DGEN_DYN, Pe_tf, Qe_tf, δ_tf, Δω_tf,
-            Ed_tf, Eq_tf, Id_tf, Iq_tf, Te_tf, V_tf, θ_tf, time_window;
-            speed_in_algebra=dq_speed_dev_in_algebra)
-    dyn_model_dict[:eq_const][:eq_const_Pe_tf] = eq_Pe
-    dyn_model_dict[:eq_const][:eq_const_Qe_tf] = eq_Qe
-    dyn_model_dict[:eq_const][:eq_const_Vd_tf] = eq_Vd
-    dyn_model_dict[:eq_const][:eq_const_Vq_tf] = eq_Vq
-    dyn_model_dict[:eq_const][:eq_const_Te_tf] = eq_Te
+    alg_tf = eq_const_dq_machine_algebra!(
+        model, sg_gens, DGEN, DGEN_DYN, Pe_tf, Qe_tf, δ_tf, Δω_tf,
+        Ed_tf, Eq_tf, Id_tf, Iq_tf, Te_tf, V_tf, θ_tf, time_window;
+        speed_in_algebra=dq_speed_dev_in_algebra)
+    dyn_model_dict[:eq_const][:eq_const_Pe_tf] = alg_tf.eq_Pe
+    dyn_model_dict[:eq_const][:eq_const_Qe_tf] = alg_tf.eq_Qe
+    dyn_model_dict[:eq_const][:eq_const_Vd_tf] = alg_tf.eq_Vd
+    dyn_model_dict[:eq_const][:eq_const_Vq_tf] = alg_tf.eq_Vq
+    dyn_model_dict[:eq_const][:eq_const_Te_tf] = alg_tf.eq_Te
 
     # Nodal admittance terms from Ybus; dq currents provide the generator injection.
     terms_Pb, terms_Qb = _build_fullbus_nodal_injection_terms!(
         model, nBUS, bus_gen_circ_dict, V_tf, θ_tf, time_window, Ybus)
     haskey(dyn_model_dict, :expressions) ||
         (dyn_model_dict[:expressions] = OrderedDict{Symbol, Any}())
-    dyn_model_dict[:expressions][:Vd_tf] = Vd_expr_tf
-    dyn_model_dict[:expressions][:Vq_tf] = Vq_expr_tf
+    dyn_model_dict[:expressions][:Vd_tf] = alg_tf.Vd_out
+    dyn_model_dict[:expressions][:Vq_tf] = alg_tf.Vq_out
     dyn_model_dict[:expressions][:P_inj_tf] = terms_Pb
     dyn_model_dict[:expressions][:Q_inj_tf] = terms_Qb
     dyn_model_dict[:eq_const][:eq_const_Pbalance_tf] = eq_const_dq_Pbalance!(
@@ -628,11 +628,12 @@ function Define_PostFault_Dynamic_Model_dq!(
     δ_tpf = var_fullbus_gen_rotor_angle_time!(
         model, active_gen, time_window, dyn_model_dict[:vars][:δ]; suffix="tpf")
     Δω_tpf = var_fullbus_gen_speed_dev_time!(model, active_gen, time_window; suffix="tpf")
-    Ed_tpf, Eq_tpf, Id_tpf, Iq_tpf, Te_tpf = var_dq_gen_state_time!(
+    dq_tpf = var_dq_gen_state_time!(
         model, active_gen, time_window, dyn_model_dict[:vars][:δ],
         dyn_model_dict[:vars][:Ed], dyn_model_dict[:vars][:Eq],
         dyn_model_dict[:vars][:Id], dyn_model_dict[:vars][:Iq], val_Pg;
         suffix="tpf", emf_gens=sg_gens)
+    Ed_tpf, Eq_tpf, Id_tpf, Iq_tpf, Te_tpf = dq_tpf.Ed, dq_tpf.Eq, dq_tpf.Id, dq_tpf.Iq, dq_tpf.Te
 
     dyn_model_dict[:vars][:V_tpf] = V_tpf
     dyn_model_dict[:vars][:θ_tpf] = θ_tpf
@@ -669,18 +670,17 @@ function Define_PostFault_Dynamic_Model_dq!(
                 model, sg_gens, Δω_tpf, ΔωCOI_tpf, time_window, Δω_tol)
     end
 
-    eq_Pe, eq_Qe, eq_Vd, eq_Vq, eq_Te, Vd_expr_tpf, Vq_expr_tpf =
-        eq_const_dq_machine_algebra!(
-            model, sg_gens, DGEN, DGEN_DYN, Pe_tpf, Qe_tpf, δ_tpf, Δω_tpf,
-            Ed_tpf, Eq_tpf, Id_tpf, Iq_tpf, Te_tpf, V_tpf, θ_tpf, time_window;
-            speed_in_algebra=dq_speed_dev_in_algebra)
-    dyn_model_dict[:eq_const][:eq_const_Pe_tpf] = eq_Pe
-    dyn_model_dict[:eq_const][:eq_const_Qe_tpf] = eq_Qe
-    dyn_model_dict[:eq_const][:eq_const_Vd_tpf] = eq_Vd
-    dyn_model_dict[:eq_const][:eq_const_Vq_tpf] = eq_Vq
-    dyn_model_dict[:eq_const][:eq_const_Te_tpf] = eq_Te
-    dyn_model_dict[:expressions][:Vd_tpf] = Vd_expr_tpf
-    dyn_model_dict[:expressions][:Vq_tpf] = Vq_expr_tpf
+    alg_tpf = eq_const_dq_machine_algebra!(
+        model, sg_gens, DGEN, DGEN_DYN, Pe_tpf, Qe_tpf, δ_tpf, Δω_tpf,
+        Ed_tpf, Eq_tpf, Id_tpf, Iq_tpf, Te_tpf, V_tpf, θ_tpf, time_window;
+        speed_in_algebra=dq_speed_dev_in_algebra)
+    dyn_model_dict[:eq_const][:eq_const_Pe_tpf] = alg_tpf.eq_Pe
+    dyn_model_dict[:eq_const][:eq_const_Qe_tpf] = alg_tpf.eq_Qe
+    dyn_model_dict[:eq_const][:eq_const_Vd_tpf] = alg_tpf.eq_Vd
+    dyn_model_dict[:eq_const][:eq_const_Vq_tpf] = alg_tpf.eq_Vq
+    dyn_model_dict[:eq_const][:eq_const_Te_tpf] = alg_tpf.eq_Te
+    dyn_model_dict[:expressions][:Vd_tpf] = alg_tpf.Vd_out
+    dyn_model_dict[:expressions][:Vq_tpf] = alg_tpf.Vq_out
 
     terms_Pb, terms_Qb = _build_fullbus_nodal_injection_terms!(
         model, nBUS, bus_gen_circ_dict, V_tpf, θ_tpf, time_window, Ybus)

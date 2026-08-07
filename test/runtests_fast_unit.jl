@@ -45,6 +45,87 @@ const INPUT_9BUS = fixture_case("9bus")
         end
     end
 
+    @testset "Machine data vs dynamic config (validate_dyn_data!)" begin
+        df_min  = TSCOPF.Read_Gen_Dynamic_Data(INPUT_9BUS; filename = "gen_dynamic_data.csv")
+        df_full = TSCOPF.Read_Gen_Dynamic_Data(INPUT_9BUS; filename = "gen_dynamic_data_full.csv")
+
+        # Classical 2nd-order FULL_BUS + governor. This combination is the reported hole:
+        # the parser pre-fills R/T1/T2/T3 with NaN, so nothing downstream errors — the
+        # NaNs simply become governor constraint coefficients.
+        gov_cfg(fname) = RunConfig(
+            trans_stab = true, case = "9bus",
+            dispatch = DispatchConfig(type_model = "ACOPF"),
+            transient = TransientConfig(
+                gen_dynamic_filename = fname,
+                dyn_model = DynModelConfig(
+                    network_form = FULL_BUS, mech_power_mode = USE_PM,
+                    bound_style = :coi_box, include_governor = true)))
+
+        dyn_gov = gov_cfg("gen_dynamic_data.csv").transient.dyn_model
+        @test TSCOPF.missing_dyn_columns(dyn_gov, df_min) == [:R, :T1, :T2, :T3]
+        @test isempty(TSCOPF.missing_dyn_columns(dyn_gov, df_full))
+
+        err = try
+            TSCOPF.validate_dyn_data!(gov_cfg("gen_dynamic_data.csv"), df_min)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        # The message must name the file the user set, the missing columns, and the knob
+        # that demands them — a bare "machine data missing" sends them hunting.
+        @test occursin("gen_dynamic_data.csv", err.msg)
+        @test occursin("R, T1, T2, T3", err.msg)
+        @test occursin("include_governor=true", err.msg)
+
+        @test TSCOPF.validate_dyn_data!(gov_cfg("gen_dynamic_data_full.csv"), df_full) === nothing
+
+        # AVR columns blanked on an otherwise complete dq file.
+        avr_cfg = RunConfig(
+            trans_stab = true, case = "9bus",
+            dispatch = DispatchConfig(type_model = "ACOPF"),
+            transient = TransientConfig(
+                gen_dynamic_filename = "gen_dynamic_data_full.csv",
+                dyn_model = DynModelConfig(
+                    gen_order = DQ_4TH, network_form = FULL_BUS,
+                    mech_power_mode = USE_PM, bound_style = :coi_box, include_avr = true)))
+        df_no_avr = copy(df_full)
+        df_no_avr[!, :T_exc] .= NaN
+        @test TSCOPF.missing_dyn_columns(avr_cfg.transient.dyn_model, df_no_avr) == [:T_exc]
+        @test_throws ArgumentError TSCOPF.validate_dyn_data!(avr_cfg, df_no_avr)
+        @test TSCOPF.validate_dyn_data!(avr_cfg, df_full) === nothing
+
+        # No-op off the TSC path; explicit throw when a TSC run carries no machine data.
+        @test TSCOPF.validate_dyn_data!(RunConfig(), nothing) === nothing
+        @test_throws ArgumentError TSCOPF.validate_dyn_data!(gov_cfg("gen_dynamic_data.csv"), nothing)
+
+        # A partly-filled fleet: the governor columns exist but one generator's cells are
+        # blank. CSV.jl types such a column Union{Missing, Float64}; the parser maps the
+        # blanks to NaN so this reaches the same diagnostic as an absent column instead of
+        # dying earlier with `MethodError: no method matching Float64(::Missing)`.
+        # `include_governor` is fleet-wide (the builders loop over every active_gen), so
+        # one unfilled row is a genuine error, not a per-unit opt-out.
+        mktempdir() do dir
+            src_lines = readlines(joinpath(INPUT_9BUS, "gen_dynamic_data_full.csv"))
+            blanked = replace(src_lines[3], ";0.05;0.5;2.5;7.5" => ";;;;")
+            @test blanked != src_lines[3]   # guard: the substitution actually fired
+            write(joinpath(dir, "gen_dyn_partial.csv"),
+                  join([src_lines[1], src_lines[2], blanked, src_lines[4]], "\n"))
+
+            df_partial = TSCOPF.Read_Gen_Dynamic_Data(dir; filename = "gen_dyn_partial.csv")
+            @test isnan(df_partial.R[2])
+            @test df_partial.R[1] ≈ 0.05 && df_partial.R[3] ≈ 0.05
+            @test TSCOPF.missing_dyn_columns(dyn_gov, df_partial) == [:R, :T1, :T2, :T3]
+            @test_throws ArgumentError TSCOPF.validate_dyn_data!(
+                gov_cfg("gen_dyn_partial.csv"), df_partial)
+
+            # Without the governor those same blanks are irrelevant — nothing reads them.
+            dyn_plain = DynModelConfig(network_form = FULL_BUS, mech_power_mode = USE_PM,
+                                       bound_style = :coi_box)
+            @test isempty(TSCOPF.missing_dyn_columns(dyn_plain, df_partial))
+        end
+    end
+
     @testset "DynModelConfig validation" begin
         cfg_default = RunConfig()
         @test validate_dyn_config!(cfg_default) === nothing

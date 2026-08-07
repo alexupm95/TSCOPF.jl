@@ -12,6 +12,10 @@ Pre-fault subtransient emfs and dq currents.
 
 Unbounded algebraic states; steady-state is enforced by `eq_const_dq_init_steady_state!`.
 `E_fd` and `δ` are declared separately via the classical FULL_BUS var builders.
+
+Returns a `NamedTuple` `(; Ed, Eq, Id, Iq)`. The dq builders return named fields rather than
+bare tuples so a caller cannot silently bind the wrong state to the wrong name when a sibling
+builder carries one field more (see `var_dq_gen_state_time!`, which also returns `Te`).
 """
 function var_dq_prefault_algebraic!(
     model::JuMP.Model,
@@ -27,7 +31,7 @@ function var_dq_prefault_algebraic!(
         Id[gen] = JuMP.@variable(model, base_name="Id[$gen]")
         Iq[gen] = JuMP.@variable(model, base_name="Iq[$gen]")
     end
-    return Ed, Eq, Id, Iq
+    return (; Ed, Eq, Id, Iq)
 end
 
 """Per-generator, per-step dq machine states.
@@ -36,6 +40,8 @@ end
 terminal currents for KCL). `Ed`/`Eq`/`Te` are created only for `emf_gens`
 (default: all of `active_gen`). The reference implementation never declares time-window Ed/Eq/Te for
 GFMs — leaving them free breaks Ipopt L-BFGS.
+
+Returns a `NamedTuple` `(; Ed, Eq, Id, Iq, Te)`.
 """
 function var_dq_gen_state_time!(
     model::JuMP.Model,
@@ -80,5 +86,5 @@ function var_dq_gen_state_time!(
             end
         end
     end
-    return Ed, Eq, Id, Iq, Te
+    return (; Ed, Eq, Id, Iq, Te)
 end

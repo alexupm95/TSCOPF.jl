@@ -183,9 +183,7 @@ function Make_DCOPF_Model_w_Bbus!(model::Model,
     #--------------------------------------
     # Branch susceptance convention (SIMPLE = 1/x ; POWERMODELS = imag(inv(r+jx))).
     susc_model = opf_input_param[:susceptance_model]
-    Bbus = susc_model == POWERMODELS ?
-        Calculate_Matrix_B_PowerModels(DBUS, DCIR, nBUS, nCIR) :  # b = -x/(r²+x²)
-        Calculate_Matrix_B(DBUS, DCIR, nBUS, nCIR)             # b = -1/x  (steady-state condition)
+    Bbus = Calculate_Matrix_B(DBUS, DCIR, nBUS, nCIR; susceptance_model = susc_model)
 
     # Save_Matrix_CSV(path_names[:pf_main], path_names[:pf_bus_matrices], "df_Bbus", Bbus)  # Save the suscpetance matrix
     if save_matrices

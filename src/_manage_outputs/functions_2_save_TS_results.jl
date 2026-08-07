@@ -26,9 +26,30 @@ function _export_prefault_var_dicts(dyn_model_dict::OrderedDict{Symbol, Any})::V
     elseif haskey(dyn_model_dict[:vars], :P_m)
         push!(dicts, dyn_model_dict[:vars][:P_m])
     end
+    # Control set-points: constant over the horizon, created only by the AVR / governor.
+    # They are not dq-specific — the governor also runs on the classical FULL_BUS path.
+    for sym in (:V_ref, :P_ref)
+        haskey(dyn_model_dict[:vars], sym) && push!(dicts, dyn_model_dict[:vars][sym])
+    end
     # GFM pre-fault algebraic (Phase G1); absent when allow_gfm=false.
     for sym in (:P_meas, :Q_meas, :V_meas, :E_int, :V_set)
         haskey(dyn_model_dict[:vars], sym) && push!(dicts, dyn_model_dict[:vars][sym])
+    end
+    return dicts
+end
+
+"""Governor state trajectories (`Pv_raw_tf`, `Pv_tf`, `Pm_tf`, …) for the model TXT export.
+
+Independent of `gen_order`: the TGOV1 governor is attached on the classical FULL_BUS path
+as well as on DQ, so these must not sit behind the dq gate."""
+function _export_gov_time_var_dicts(
+    dyn_model_dict::OrderedDict{Symbol, Any},
+    suffix::String,
+)::Vector{Any}
+    dicts = Any[]
+    for stem in ("Pv_raw", "Pv", "Pm")
+        key = Symbol(string(stem, "_", suffix))
+        haskey(dyn_model_dict[:vars], key) && push!(dicts, dyn_model_dict[:vars][key])
     end
     return dicts
 end
@@ -180,19 +201,24 @@ function _export_gfm_appendix!(
     return nothing
 end
 
-"""Print dq-machine equality constraints not covered by the classical 2nd-order export."""
-function _export_dq_eq_const_appendix!(
+"""Print machine/control constraints not covered by the classical 2nd-order export.
+
+Covers the dq machine (DQ_4TH only), the AVR (DQ only) and the turbine governor. The
+governor runs on the **classical** FULL_BUS path too, so this block must not be gated on
+`_is_dq_4th_model` — every family is selected by `haskey`, and the dq/AVR keys are simply
+absent on a classical run.
+"""
+function _export_machine_control_eq_const_appendix!(
     io::IO,
     dyn_model_dict::OrderedDict{Symbol, Any},
 )
-    _is_dq_4th_model(dyn_model_dict) || return nothing
     for (title, key) in (
         ("DQ Init — Subtransient EMF Ed", :eq_const_Ed_init),
         ("DQ Init — Subtransient EMF Eq", :eq_const_Eq_init),
         ("DQ Init — Stator Voltage Vd", :eq_const_Vd_init),
         ("DQ Init — Stator Voltage Vq", :eq_const_Vq_init),
         ("DQ Init — Exciter E_fd", :eq_const_Efd_init),
-        ("DQ Init — Governor P_ref", :eq_const_Pref_init),
+        ("Governor Init — Set-point P_ref", :eq_const_Pref_init),
     )
         haskey(dyn_model_dict[:eq_const], key) || continue
         println(io, "=====================================")
@@ -227,6 +253,24 @@ function _export_dq_eq_const_appendix!(
                 end
                 println(io, "\n")
             end
+        end
+    end
+    # GOV_HARD_BOUND under the CONSTRAINT encoding emits explicit ≤-form valve bounds.
+    # (Under the VARIABLE encoding they sit on `Pv_raw` and are dumped by
+    # `Export_Variable_Bounds!` instead, so nothing is listed here.)
+    for (period, win) in (("Fault Period", "tf"), ("Post-Fault Period", "tpf")),
+        (side, side_label) in ((:lower, "Lower Bound"), (:upper, "Upper Bound"))
+        key = Symbol("ineq_const_gov_valve_$(win)_$(side)")
+        haskey(dyn_model_dict[:ineq_const], key) || continue
+        println(io, "=====================================")
+        println(io, "Inequality Constraints: Governor Valve $side_label ($period)")
+        println(io, "=====================================")
+        for i in eachindex(dyn_model_dict[:ineq_const][key])
+            println(io, " ******* Gen $i ****** ")
+            for (t, c) in dyn_model_dict[:ineq_const][key][i]
+                println(io, "$t: ", c)
+            end
+            println(io, "\n")
         end
     end
     return nothing
@@ -696,6 +740,9 @@ function Export_Dynamic_Model_tsred(model::Model,
         append!(vector_dict_var_fault, _export_gfm_time_var_dicts(dyn_model_dict, "tf"))
         append!(vector_dict_var_postf, _export_gfm_time_var_dicts(dyn_model_dict, "tpf"))
     end
+    # Governor states exist on classical FULL_BUS as well — never gate them on gen_order.
+    append!(vector_dict_var_fault, _export_gov_time_var_dicts(dyn_model_dict, "tf"))
+    append!(vector_dict_var_postf, _export_gov_time_var_dicts(dyn_model_dict, "tpf"))
     vector_dict_var_postf_COI = _export_postf_COI_var_dicts(dyn_model_dict)
 
     open(joinpath(pf_ts, "dynamic_model_details.txt"), "w") do io
@@ -944,7 +991,7 @@ function Export_Dynamic_Model_tsred(model::Model,
             println(io, "\n")
         end
 
-        _export_dq_eq_const_appendix!(io, dyn_model_dict)
+        _export_machine_control_eq_const_appendix!(io, dyn_model_dict)
 
         # ---------------------
         # Inequality constraints
@@ -1576,7 +1623,7 @@ function Export_Dynamic_Model_tsredlinear(model::Model,
             println(io, "\n")
         end
 
-        _export_dq_eq_const_appendix!(io, dyn_model_dict)
+        _export_machine_control_eq_const_appendix!(io, dyn_model_dict)
 
         # ---------------------
         # Inequality constraints

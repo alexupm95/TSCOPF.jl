@@ -19,9 +19,11 @@ Pre-fault dq steady state at t = 0, coupled to the dispatch (V, θ, P_g, Q_g).
 Pins Ed, Eq, Id, Iq, E_fd, and δ so the machine sits on the solved ACOPF point.
 No (1+Δω) here — pre-fault is synchronous (Δω = 0).
 
-Returns `(eq_Ed, eq_Eq, eq_Vd, eq_Vq, eq_P, eq_Q, Vd_init, Vq_init)`; the last two are
-the t = 0 terminal dq projections, kept for export in the same spirit as the transient
-`Vd`/`Vq` expressions (see `eq_const_dq_machine_algebra!`).
+Returns the `NamedTuple` `(; eq_Ed, eq_Eq, eq_Vd, eq_Vq, eq_P, eq_Q, Vd_init, Vq_init)`; the
+last two are the t = 0 terminal dq projections, kept for export in the same spirit as the
+transient `Vd`/`Vq` expressions (see `eq_const_dq_machine_algebra!`). Named fields rather
+than a bare 8-tuple: two adjacent `ConstraintRef` dictionaries are interchangeable to the
+compiler, so a positional slip here would build a silently wrong model instead of erroring.
 """
 function eq_const_dq_init_steady_state!(
     model::JuMP.Model,
@@ -69,7 +71,7 @@ function eq_const_dq_init_steady_state!(
         Vd_init[gen] = JuMP.@expression(model, V[bus] * sin(δ[gen] - θ[bus]))
         Vq_init[gen] = JuMP.@expression(model, V[bus] * cos(δ[gen] - θ[bus]))
     end
-    return eq_Ed, eq_Eq, eq_Vd, eq_Vq, eq_P, eq_Q, Vd_init, Vq_init
+    return (; eq_Ed, eq_Eq, eq_Vd, eq_Vq, eq_P, eq_Q, Vd_init, Vq_init)
 end
 
 # ===================================================================================
@@ -82,7 +84,7 @@ Transient dq stator algebra and electrical power at each time step.
 `Te = Ed·Id + Eq·Iq`; `Pe = rot·Te` with `rot = dq_rotor_scale(Δω, speed_in_algebra)`.
 Stator Vd/Vq links use the same `rot` factor on Ed/Eq when speed is included.
 
-Returns `(eq_Pe, eq_Qe, eq_Vd, eq_Vq, eq_Te, Vd_expr, Vq_expr)`. The last two are the
+Returns the `NamedTuple` `(; eq_Pe, eq_Qe, eq_Vd, eq_Vq, eq_Te, Vd_out, Vq_out)`. The last two are the
 terminal-voltage projections `V·sin(δ−θ)` / `V·cos(δ−θ)` per (gen, t): they were already
 built here and thrown away, so the machine's own dq voltages — the axis the whole 4th-order
 model is written in — could not be exported. Collecting them costs nothing (the same
@@ -142,7 +144,7 @@ function eq_const_dq_machine_algebra!(
                 Qe[gen][t] == Vq_expr * Id[gen][t] - Vd_expr * Iq[gen][t])
         end
     end
-    return eq_Pe, eq_Qe, eq_Vd, eq_Vq, eq_Te, Vd_out, Vq_out
+    return (; eq_Pe, eq_Qe, eq_Vd, eq_Vq, eq_Te, Vd_out, Vq_out)
 end
 
 """
