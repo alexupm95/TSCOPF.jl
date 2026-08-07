@@ -44,6 +44,23 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ### Fixed
 
+- **The TGOV1 turbine row let the valve limiter be bypassed.** `eq_const_gov_mech!`
+  discretised the substituted state form
+  `T3·dPm/dt = (1−T2/T1)·Pv + [(T2/T1)/R]·(P_ref−Δω) − Pm`, obtained by eliminating
+  `dPv/dt` with the valve ODE. That elimination is exact only while the valve is
+  unsaturated: under `GOV_SMOOTH` the clamped `Pv` no longer satisfies
+  `dPv/dt = [(P_ref−Δω)/R − Pv]/T1`, yet the feedforward term kept injecting the raw,
+  unclamped droop signal into the mechanical power — on the bundled 9-bus data that
+  path carries a gain of `(T2/T1)/R = 100`, so valve saturation never capped `P_m`.
+  The turbine lead-lag is now discretised directly, `T3·dPm/dt + Pm = T2·dPv/dt + Pv`,
+  on the limited `Pv` alone; `P_ref`, `Δω`, `R` and `T1` no longer appear in the row.
+  Substituting the discrete valve equality into the old discrete row recovers the new
+  one exactly, trapezoidal and backward Euler alike, so `GOV_NO_LIMIT` and
+  `GOV_HARD_BOUND` are unchanged and only `GOV_SMOOTH` changes behaviour. The row is
+  normalised by `2·T3` to keep `dual_gov_mech` on its previous scale; the governor
+  multipliers still redistribute between `dual_gov_mech` and `dual_gov_valve`, while
+  LMPs and the δ/Δω box duals are untouched.
+
 - **`Dispatch_WarmStart/` was created on paths that never warm-start.** The
   pre-fault coupling snapshot was gated on a `coupling_init_source` local that
   defaulted to `:acopf_warmstart` and was only corrected inside the FULL_BUS

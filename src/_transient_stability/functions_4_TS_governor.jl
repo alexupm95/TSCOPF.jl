@@ -12,7 +12,20 @@
  Governor model (IEEE TGOV1, matching the DGEN_DYN columns R, T1, T2, T3):
 
      Valve:  T1·dPv/dt = (P_ref − Δω)/R − Pv
-     Mech:   T3·dPm/dt = (1 − T2/T1)·Pv + (T2/T1)·(P_ref − Δω)/R − Pm
+     Mech:   T3·dPm/dt + Pm = T2·dPv/dt + Pv          (turbine lead-lag, on Pv alone)
+
+ The mech row is the *direct* discretization of the turbine transfer function
+ (1 + s·T2)/(1 + s·T3) acting on the valve output.  It used to be written in the
+ substituted state-space form obtained by eliminating dPv/dt with the valve ODE,
+
+     T3·dPm/dt = (1 − T2/T1)·Pv + (T2/T1)·(P_ref − Δω)/R − Pm,          [removed]
+
+ which is algebraically exact only while the valve is *unsaturated*: once a limiter
+ clamps Pv, dPv/dt is no longer (u − Pv)/T1 and the (T2/T1)·u term smuggles the raw,
+ unclamped droop signal past the limiter into the turbine.  The direct form above
+ touches nothing but the limited Pv, so saturation propagates correctly.  For
+ GOV_NO_LIMIT / GOV_HARD_BOUND (where Pv ≡ Pv_raw and the valve equality still holds)
+ the two forms are identical row-by-row, trapezoidal and backward Euler alike.
 
  Initialization at the Δω = 0 equilibrium (P_m = P_g) gives, consistently,
      P_ref = R·P_m,   Pv₀ = P_m,   Pm₀ = P_m.
@@ -26,7 +39,7 @@
    GOV_SMOOTH     — Pv_unlim is the ODE state; Pv = smooth min/max clamp (nonconvex).
    GOV_HARD_BOUND — Pv is the ODE state + explicit ≤-form bounds (can be infeasible).
  Only the valve treatment differs between modes; the mech ODE always consumes the
- (possibly-limited) valve output Pv plus the raw (P_ref − Δω)/R feedforward.
+ (possibly-limited) valve output Pv, and nothing else.
 ================================================================================
 =#
 
@@ -275,58 +288,51 @@ function apply_gov_valve_limit!(
 end
 
 # ===================================================================================
-# Mech ODE (trapezoidal): T3·dPm/dt = (1−T2/T1)·Pv + (T2/T1)·(P_ref−Δω)/R − Pm
+# Mech ODE (trapezoidal): T3·dPm/dt + Pm = T2·dPv/dt + Pv
 # ===================================================================================
-# `Pv` is the (possibly-limited) valve output. t=1 anchors: fault → (Pm=P_m, Pv=P_m,
-# Δω=0); post-fault → (last fault-on Pm, last fault-on Pv, last fault-on Δω).
+# `Pv` is the (possibly-limited) valve output — the only signal the turbine sees, which
+# is what keeps the valve limiter effective (see the file header). Neither P_ref, Δω, R
+# nor T1 enter here. t=1 anchors: fault → (Pm=P_m, Pv=P_m); post-fault → (last fault-on
+# Pm, last fault-on *limited* Pv).
 
-"""Mechanical-power update for one window: first step via `ode_first_step`, then trap."""
+"""Mechanical-power update for one window: first step via `ode_first_step`, then trap.
+
+Discretizes the turbine lead-lag `T3·dPm/dt + Pm = T2·dPv/dt + Pv` directly, both sides
+integrated over the step, then divided through by `2·T3` (`T3` for backward Euler) so the
+row keeps the `(1 + c)` normalization used by the valve ODE — this fixes the dual scale of
+the `dual_gov_mech` family.  `Pv_prev0` must be the *limited* valve output of the previous
+window, not the raw integrator state."""
 function eq_const_gov_mech!(
     model::JuMP.Model,
     active_gen::Vector{Int64},
     DGEN_DYN::DataFrame,
     Pm::OrderedDict{Int, OrderedDict{Int, JuMP.VariableRef}},
     Pv::OrderedDict{Int, OrderedDict{Int, JuMP.VariableRef}},
-    P_ref::OrderedDict{Int, JuMP.VariableRef},
-    Δω::OrderedDict{Int, OrderedDict{Int, JuMP.VariableRef}},
     Pm_prev0::OrderedDict{Int, JuMP.VariableRef},
     Pv_prev0::OrderedDict{Int, JuMP.VariableRef},
-    Δω_prev0,
     time_window::Vector{Float64},
     Δt::Float64;
     ode_first_step::Symbol=:trapezoidal,
 )
     eq = OrderedDict{Int, OrderedDict{Int, JuMP.ConstraintRef}}()
     for gen in active_gen
-        R, T1, T2, T3 = DGEN_DYN.R[gen], DGEN_DYN.T1[gen], DGEN_DYN.T2[gen], DGEN_DYN.T3[gen]
-        c   = Δt / (2 * T3)
-        lead = 1 - T2 / T1        # valve → mech lead-lag gain
-        ff  = (T2 / T1) / R       # direct feedforward gain of (P_ref - Δω)
+        T2, T3 = DGEN_DYN.T2[gen], DGEN_DYN.T3[gen]
+        c    = Δt / (2 * T3)      # trapezoidal half-step, module convention
+        lead = T2 / T3            # turbine lead/lag ratio
         eq[gen] = OrderedDict{Int, JuMP.ConstraintRef}()
         for t in eachindex(time_window)
             Pm_prev = t == 1 ? Pm_prev0[gen] : Pm[gen][t - 1]
+            Pv_prev = t == 1 ? Pv_prev0[gen] : Pv[gen][t - 1]
             if t == 1 && ode_first_step === :backward_euler
                 # --- BACKWARD EULER FOR STEP 1 (reference GFM path) ---
                 eq[gen][t] = JuMP.@constraint(model,
                     Pm[gen][t] * (1 + Δt / T3) - Pm_prev
-                    - (Δt / T3) * (lead * Pv[gen][t]
-                                   + ff * (P_ref[gen] - Δω[gen][t])) == 0.0)
-            elseif t == 1
-                # --- TRAPEZOIDAL AT t=1 (SG pin default) ---
-                Pv_prev = Pv_prev0[gen]
-                Δω_prev = _gov_at(Δω_prev0, gen)
-                eq[gen][t] = JuMP.@constraint(model,
-                    Pm[gen][t] * (1 + c) - Pm_prev * (1 - c)
-                    - c * (lead * (Pv[gen][t] + Pv_prev)
-                           + ff * (2 * P_ref[gen] - Δω[gen][t] - Δω_prev)) == 0.0)
+                    - Pv[gen][t] * (lead + Δt / T3) + Pv_prev * lead == 0.0)
             else
-                # --- TRAPEZOIDAL FOR REMAINDER ---
-                Pv_prev = Pv[gen][t - 1]
-                Δω_prev = Δω[gen][t - 1]
+                # --- TRAPEZOIDAL FOR ALL t ---
                 eq[gen][t] = JuMP.@constraint(model,
                     Pm[gen][t] * (1 + c) - Pm_prev * (1 - c)
-                    - c * (lead * (Pv[gen][t] + Pv_prev)
-                           + ff * (2 * P_ref[gen] - Δω[gen][t] - Δω_prev)) == 0.0)
+                    - Pv[gen][t] * (lead + c) + Pv_prev * (lead - c) == 0.0)
             end
         end
     end
@@ -408,11 +414,12 @@ function Attach_Governor_fault!(
     dyn_model_dict[:vars][:Pv_tf] = Pv_tf
     _store_gov_limit!(dyn_model_dict, "tf", limit_eq, limit_ineq, Pv_raw_tf)
 
-    # Mechanical power.
+    # Mechanical power. The turbine consumes the *limited* valve output Pv_tf only; the
+    # t=1 anchor is the pre-fault equilibrium, where Pm = Pv = P_m.
     Pm_tf = var_gov_state_time!(model, active_gen, "P_mech_tf", time_window, P_m)
     dyn_model_dict[:vars][:Pm_tf] = Pm_tf
     dyn_model_dict[:eq_const][:eq_const_gov_mech_tf] = eq_const_gov_mech!(
-        model, active_gen, DGEN_DYN, Pm_tf, Pv_tf, P_ref, Δω_tf, P_m, P_m, 0.0, time_window, Δt;
+        model, active_gen, DGEN_DYN, Pm_tf, Pv_tf, P_m, P_m, time_window, Δt;
         ode_first_step=ode_fs)
 
     return Pm_tf
@@ -460,11 +467,14 @@ function Attach_Governor_postf!(
     dyn_model_dict[:vars][:Pv_tpf] = Pv_tpf
     _store_gov_limit!(dyn_model_dict, "tpf", limit_eq, limit_ineq, Pv_raw_tpf)
 
+    # The turbine anchor is `Pv_out_last` — the *limited* valve output of the last fault-on
+    # step, not `Pv_raw_last`. Under GOV_SMOOTH the two differ exactly by the clamp, and
+    # feeding the raw state here would leak the unsaturated signal across the window seam.
     Pm_tpf = var_gov_state_time!(model, active_gen, "P_mech_tpf", time_window, P_m)
     dyn_model_dict[:vars][:Pm_tpf] = Pm_tpf
     dyn_model_dict[:eq_const][:eq_const_gov_mech_tpf] = eq_const_gov_mech!(
-        model, active_gen, DGEN_DYN, Pm_tpf, Pv_tpf, P_ref, Δω_tpf,
-        Pm_last, Pv_out_last, Δω_last, time_window, Δt; ode_first_step=ode_fs)
+        model, active_gen, DGEN_DYN, Pm_tpf, Pv_tpf,
+        Pm_last, Pv_out_last, time_window, Δt; ode_first_step=ode_fs)
 
     return Pm_tpf
 end

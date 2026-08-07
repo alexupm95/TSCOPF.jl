@@ -123,7 +123,7 @@ P_v = \frac{1}{1 + T_1 s}\cdot\frac{P_{\mathrm{ref}} - \Delta\omega}{R},
 P_m = \frac{1 + T_2 s}{1 + T_3 s}\, P_v .
 ```
 
-The lead-lag is not assembled as written, because $\dot{P}_v$ would appear on the right-hand side. Substituting the valve ODE $\dot{P}_v = \bigl[(P_{\mathrm{ref}}-\Delta\omega)/R - P_v\bigr]/T_1$ into $T_3\dot{P}_m + P_m = P_v + T_2\dot{P}_v$ eliminates the derivative and gives the two first-order equations the builder actually stamps:
+The builder stamps the valve lag as a first-order ODE and the turbine lead-lag exactly as written, derivative of the input included:
 
 !!! note "Model 8.5 (governor state equations)"
     ```math
@@ -132,16 +132,19 @@ The lead-lag is not assembled as written, because $\dot{P}_v$ would appear on th
     T_{1,g}\,\frac{d\tilde{P}_{v,g}}{dt}
       &= \frac{P_{\mathrm{ref},g} - \Delta\omega_g}{R_g} - \tilde{P}_{v,g} , \\[4pt]
     \label{eq:gov-mech-8}
-    T_{3,g}\,\frac{dP_{m,g}}{dt}
-      &= \underbrace{\left(1 - \frac{T_{2,g}}{T_{1,g}}\right)}_{\texttt{lead}} P_{v,g}
-       + \underbrace{\frac{T_{2,g}/T_{1,g}}{R_g}}_{\texttt{ff}}\bigl(P_{\mathrm{ref},g} - \Delta\omega_g\bigr)
-       - P_{m,g} .
+    T_{3,g}\,\frac{dP_{m,g}}{dt} + P_{m,g}
+      &= T_{2,g}\,\frac{dP_{v,g}}{dt} + P_{v,g} .
     \end{align}
     ```
 
-    The two groupings are named `lead` and `ff` in `eq_const_gov_mech!`. Note that $\eqref{eq:gov-mech-8}$ consumes the **limited** valve output $P_{v,g}$ while $\eqref{eq:gov-valve-8}$ integrates the **raw** state $\tilde{P}_{v,g}$; under `GOV_NO_LIMIT` and `GOV_HARD_BOUND` the two coincide, under `GOV_SMOOTH` they do not. A consequence worth noting: the feedforward term keeps injecting $(P_{\mathrm{ref}} - \Delta\omega)/R$ into the mechanical power even when the valve is fully saturated, because that path bypasses the limiter. This is faithful to TGOV1 as usually written, but it means valve saturation does not hard-cap $P_m$ when $T_2 > 0$.
+    $\eqref{eq:gov-mech-8}$ consumes the **limited** valve output $P_{v,g}$ and nothing else — no $P_{\mathrm{ref}}$, no $\Delta\omega$, no $R_g$ or $T_{1,g}$ — while $\eqref{eq:gov-valve-8}$ integrates the **raw** state $\tilde{P}_{v,g}$. Under `GOV_NO_LIMIT` and `GOV_HARD_BOUND` the two coincide; under `GOV_SMOOTH` they differ by the clamp, and the turbine sees only the clamped signal.
 
-Discretisation follows the same pattern as the exciter: trapezoidal with $c = \Delta t/(2T_1)$ and $c = \Delta t/(2T_3)$ respectively, $t=1$ of the fault window anchored at $(\tilde{P}_v, P_m, \Delta\omega) = (P_{m,g}, P_{m,g}, 0)$ and $t=1$ of the post-fault window at the last fault-on triple, and the same `ode_first_step` override for the first row of each window.
+!!! warning "Why not the substituted state form"
+    Eliminating $\dot{P}_v$ with $\eqref{eq:gov-valve-8}$ turns $\eqref{eq:gov-mech-8}$ into the familiar two-state form
+    $T_3\dot{P}_m = (1 - T_2/T_1)P_v + \bigl[(T_2/T_1)/R\bigr](P_{\mathrm{ref}} - \Delta\omega) - P_m$,
+    which the code used until it was found to be wrong under saturation. That substitution is exact only while the valve is unsaturated: once a limiter clamps $P_v$, $\dot{P}_v \neq \bigl[(P_{\mathrm{ref}}-\Delta\omega)/R - P_v\bigr]/T_1$, yet the feedforward term keeps injecting the raw, unclamped droop signal into the mechanical power — the limiter is bypassed and valve saturation never caps $P_m$ when $T_2 > 0$. Substituting the *discrete* valve equality into the *discrete* substituted mech row recovers $\eqref{eq:gov-mech-8}$ row-for-row, trapezoidal and backward Euler alike, so the two forms are identical whenever the valve is free and differ only where the old one was unphysical.
+
+Discretisation follows the same pattern as the exciter: trapezoidal, $c = \Delta t/(2T_1)$ for the valve and $c = \Delta t/(2T_3)$ for the turbine, with $\eqref{eq:gov-mech-8}$ integrated on both sides and then divided through by $2T_{3,g}$ so the row keeps the same $(1+c)$ normalisation — its multiplier therefore stays on the scale it had under the old form. $t=1$ of the fault window is anchored at $(\tilde{P}_v, P_v, P_m, \Delta\omega) = (P_{m,g}, P_{m,g}, P_{m,g}, 0)$ and $t=1$ of the post-fault window at the last fault-on values, the turbine taking the **limited** $P_{v,g}$ there as well; the same `ode_first_step` override applies to the first row of each window.
 
 ### Initialisation and the $R$-scaled set-point
 
@@ -153,7 +156,7 @@ Discretisation follows the same pattern as the exciter: trapezoidal with $c = \D
     \end{equation}
     ```
 
-    At the pre-fault equilibrium $\Delta\omega_g = 0$, so $\eqref{eq:gov-valve-8}$ gives $\tilde{P}_{v,g} = P_{\mathrm{ref},g}/R_g$, and $\eqref{eq:gov-mech-8}$ gives $P_{m,g} = (1-T_2/T_1)P_{v,g} + (T_2/T_1)P_{\mathrm{ref},g}/R_g$. Both reduce to $P_{v,g} = P_{m,g}$ when $P_{\mathrm{ref},g} = R_g P_{m,g}$, which is what `eq_const_gov_setpoint_init!` pins. Dual: `dual_Pref_init.csv`.
+    At the pre-fault equilibrium $\Delta\omega_g = 0$ and every derivative vanishes, so $\eqref{eq:gov-valve-8}$ gives $\tilde{P}_{v,g} = P_{\mathrm{ref},g}/R_g$ and $\eqref{eq:gov-mech-8}$ gives $P_{m,g} = P_{v,g}$. Both reduce to $\tilde{P}_{v,g} = P_{v,g} = P_{m,g}$ when $P_{\mathrm{ref},g} = R_g P_{m,g}$, which is what `eq_const_gov_setpoint_init!` pins. Dual: `dual_Pref_init.csv`.
 
     **$P_{\mathrm{ref},g}$ is therefore not a power.** It carries the droop factor, so a machine with $R = 0.05$ dispatched at $P_m = 0.8$ p.u. has $P_{\mathrm{ref}} = 0.04$. If you compare `governor_P_ref.csv` against a reference implementation that defines the set-point directly in power units, expect the factor $R$. The `P_ref_source = :dgen_pg_limits` bound on `V_ref`/`P_ref` boxes is expressed in power units, so `TsBuilderConfig.bound_P_ref = true` combined with a small $R$ effectively never binds.
 

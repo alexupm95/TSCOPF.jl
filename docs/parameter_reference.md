@@ -448,7 +448,7 @@ Nested in `RunConfig.transient.dyn_model`. Defined in `_transient_stability/DynM
 
 When `include_governor=true`, mechanical power becomes a time-varying state driven by speed
 deviation through a droop/lead-lag governor + turbine (`T1·dPv/dt=(P_ref−Δω)/R−Pv`,
-`T3·dPm/dt=(1−T2/T1)Pv+(T2/T1)(P_ref−Δω)/R−Pm`), replacing the constant `P_m` in the swing
+`T3·dPm/dt+Pm=T2·dPv/dt+Pv`), replacing the constant `P_m` in the swing
 equation. Requires machine columns `R, T1, T2, T3` (supplied by `gen_dynamic_data_full.csv`).
 The set-point is pinned to the dispatch (`P_ref=R·P_m`, `P_m=P_g`). Valve saturation:
 

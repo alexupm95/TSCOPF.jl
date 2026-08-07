@@ -44,17 +44,22 @@ const CTRL_SIM = TsSimulationConfig(δ_tol_deg = 100.0, t_end_sim = 0.6,
     t_step = 0.02, clearing_time = 0.2)
 
 """
-    controls_run(; gen_order, include_avr, include_governor, limiter, ode_first_step)
+    controls_run(; gen_order, include_avr, include_governor, limiter, ode_first_step,
+                   gov_valve_min_pu)
 
 One FULL_BUS TSC-ACOPF SC run with the requested control stack. `gen_order`
 selects the classical or dq machine; the dq path needs `gen_dynamic_data_full.csv`.
-Returns `(result, sys)` — `sys` carries `DGEN_DYN` for the droop constants.
+`gov_valve_min_pu` raises the valve lower limit — the only side of the `:gov_valve`
+spec a user can tighten, since the upper side is pinned to `pg_max/base_MVA` — which is
+how the clamp is made to bind in the saturation test. Returns `(result, sys)` — `sys`
+carries `DGEN_DYN` for the droop constants.
 """
 function controls_run(; gen_order::GenOrder = DQ_4TH,
                         include_avr::Bool = false,
                         include_governor::Bool = false,
                         limiter::GovernorLimiter = GOV_NO_LIMIT,
-                        ode_first_step::Symbol = :trapezoidal)
+                        ode_first_step::Symbol = :trapezoidal,
+                        gov_valve_min_pu::Float64 = 0.0)
     cfg = RunConfig(;
         trans_stab = true,
         case = "9bus",
@@ -69,7 +74,8 @@ function controls_run(; gen_order::GenOrder = DQ_4TH,
         dispatch = DispatchConfig(type_model = "ACOPF", use_matrix = true),
         transient = TransientConfig(
             simulation = CTRL_SIM,
-            builder = TsBuilderConfig(),
+            builder = TsBuilderConfig(
+                limits = TsBoundLimitsConfig(gov_valve_min_pu = gov_valve_min_pu)),
             gen_dynamic_filename = "gen_dynamic_data_full.csv",
             dyn_model = DynModelConfig(
                 gen_order = gen_order,
@@ -242,6 +248,61 @@ end
         @test eq_d !== nothing && ineq_d === nothing
     end
 
+    @testset "governor turbine row sees only the limited valve (structural)" begin
+        # The turbine block discretizes T3·dPm/dt + Pm = T2·dPv/dt + Pv directly, on the
+        # *limited* Pv alone. It used to be stamped in the substituted state form
+        #     T3·dPm/dt = (1−T2/T1)·Pv + [(T2/T1)/R]·(P_ref−Δω) − Pm,
+        # which is exact only while the valve is unsaturated: under GOV_SMOOTH the
+        # feedforward term carried the raw, unclamped droop signal straight past the
+        # limiter, so valve saturation never capped P_m. These coefficient checks are what
+        # fail if that substitution — or a sign — creeps back in.
+        gens = [1, 2]; nt = 3
+        Δt = 0.02
+        DGEN_DYN = DataFrame(T2 = [0.4, 0.7], T3 = [8.0, 5.0])
+
+        m  = JuMP.Model()
+        Pm = _toy_gen_time_vars(m, gens, nt, "Pm")
+        Pv = _toy_gen_time_vars(m, gens, nt, "Pv")
+        Pm0 = OrderedDict(g => JuMP.@variable(m, base_name = "Pm0[$g]") for g in gens)
+        Pv0 = OrderedDict(g => JuMP.@variable(m, base_name = "Pv0[$g]") for g in gens)
+
+        eq = TSCOPF.eq_const_gov_mech!(m, gens, DGEN_DYN, Pm, Pv, Pm0, Pv0,
+                                       zeros(nt), Δt; ode_first_step = :trapezoidal)
+
+        for g in gens
+            T2, T3 = DGEN_DYN.T2[g], DGEN_DYN.T3[g]
+            c, lead = Δt / (2 * T3), T2 / T3
+            for t in 1:nt
+                con = eq[g][t]
+                prev_m = t == 1 ? Pm0[g] : Pm[g][t - 1]
+                prev_v = t == 1 ? Pv0[g] : Pv[g][t - 1]
+                @test JuMP.normalized_coefficient(con, Pm[g][t]) ≈  (1 + c)
+                @test JuMP.normalized_coefficient(con, prev_m)   ≈ -(1 - c)
+                @test JuMP.normalized_coefficient(con, Pv[g][t]) ≈ -(lead + c)
+                @test JuMP.normalized_coefficient(con, prev_v)   ≈  (lead - c)
+                # Exactly four terms: no droop feedforward, no Δω, no P_ref.
+                @test length(JuMP.constraint_object(con).func.terms) == 4
+            end
+        end
+
+        # Physical invariant, independent of the coefficients above: at any equilibrium
+        # Pm = Pv = P₀ (both derivatives zero) the residual must vanish, for either
+        # first-step rule. A wrong lead ratio or a flipped sign breaks this.
+        for first_step in (:trapezoidal, :backward_euler)
+            me  = JuMP.Model()
+            Pme = _toy_gen_time_vars(me, gens, nt, "Pm")
+            Pve = _toy_gen_time_vars(me, gens, nt, "Pv")
+            Pm0e = OrderedDict(g => JuMP.@variable(me, base_name = "Pm0[$g]") for g in gens)
+            Pv0e = OrderedDict(g => JuMP.@variable(me, base_name = "Pv0[$g]") for g in gens)
+            eqe = TSCOPF.eq_const_gov_mech!(me, gens, DGEN_DYN, Pme, Pve, Pm0e, Pv0e,
+                                            zeros(nt), Δt; ode_first_step = first_step)
+            for g in gens, t in 1:nt
+                func = JuMP.constraint_object(eqe[g][t]).func
+                @test JuMP.value(_ -> 0.83, func) ≈ 0.0 atol = 1e-12
+            end
+        end
+    end
+
     # ====================================================================== #
     #  End-to-end solves (heavy tier)                                        #
     # ====================================================================== #
@@ -296,6 +357,57 @@ end
             # The governor actually responds: the fast valve leaves its equilibrium.
             pv = CSV.read(joinpath(csv_dir, "governor_P_valve.csv"), DataFrame; delim = ';')
             @test _max_excursion(pv) > 1e-5
+        end
+
+        @testset "GOV_SMOOTH valve clamp actually caps the mechanical power" begin
+            # The turbine row must see the *clamped* valve and nothing else. The old
+            # substituted form carried a feedforward `[(T2/T1)/R]·(P_ref − Δω)` around the
+            # limiter — on this case that gain is (2.5/0.5)/0.05 = 100 — so a saturated
+            # valve left P_m free to keep falling. Both runs below use GOV_SMOOTH; only
+            # the valve lower limit differs, which isolates the clamp as the sole cause.
+            gov(min_pu) = controls_run(gen_order = CLASSICAL_2ND, include_governor = true,
+                                       limiter = GOV_SMOOTH, gov_valve_min_pu = min_pu)
+            read_gov(res, f) = CSV.read(joinpath(res.path_names[:pf_TS_CSV], f),
+                                        DataFrame; delim = ';')
+
+            # 1. Calibration run with the clamp inactive (0 pu), to locate the valve travel.
+            loose = gov(0.0).result
+            @test loose.status in CTRL_SOLVED
+            pv_loose = read_gov(loose, "governor_P_valve.csv")
+            machines = names(pv_loose)[2:end]
+            start_MW  = [Float64(pv_loose[1, c])            for c in machines]
+            trough_MW = [minimum(Float64.(pv_loose[!, c]))  for c in machines]
+
+            # The fault accelerates the machines, so (P_ref − Δω)/R drops and every valve
+            # closes. Clamp 2 % under the *lowest* equilibrium: above that the pre-fault
+            # anchor Pv(0) = P_m would itself be clamped on the smallest machine.
+            @test all(trough_MW .< start_MW)
+            clamp_MW = 0.98 * minimum(start_MW)
+            # Without this the run below would prove nothing — the clamp has to bind.
+            @test any(trough_MW .< clamp_MW)
+
+            # 2. Same case, clamp binding.
+            tight = gov(clamp_MW / CTRL_BASE_MVA).result
+            @test tight.status in CTRL_SOLVED
+            pv_tight = read_gov(tight, "governor_P_valve.csv")
+            pm_tight = read_gov(tight, "governor_P_mech.csv")
+            # sqrt smoothing with ρ = 1e-4 lets the clamp be soft by ≈ √ρ/2 pu; 0.02 pu of
+            # slack is generous next to the excursions being measured.
+            tol_MW = 0.02 * CTRL_BASE_MVA
+
+            for c in machines
+                @test minimum(Float64.(pv_tight[!, c])) > clamp_MW - tol_MW
+                # The claim under test. T2 = 2.5 < T3 = 7.5 makes the turbine a
+                # lag-dominant lead-lag, so P_m cannot leave the range of its input — and
+                # its input is now the clamped valve, floored at clamp_MW.
+                floor_MW = min(clamp_MW, Float64(pv_tight[1, c]))
+                @test minimum(Float64.(pm_tight[!, c])) > floor_MW - tol_MW
+            end
+
+            # And the clamp must move P_m at all: if the two runs agreed, the mechanical
+            # power would not be listening to the limiter in the first place.
+            pm_loose = read_gov(loose, "governor_P_mech.csv")
+            @test maximum(abs.(Float64.(pm_tight[!, 2]) .- Float64.(pm_loose[!, 2]))) > 1e-3
         end
 
         @testset "DQ_4TH + TGOV1 — SC end-to-end" begin
