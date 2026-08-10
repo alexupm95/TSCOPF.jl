@@ -203,6 +203,7 @@ which uses the flat `RESULTS/` tree with the same conditional rules).
 | Subfolder | Created when (`mkpath` at run start) | Populated when |
 |---|---|---|
 | `Inputs/` | always | run start (`Copy_Input_CSVs_To_Results!`) |
+| `<script>.jl` (run-folder root, not a subfolder) | `run_script` set | run start — byte-for-byte copy of the `.jl` file that built the `RunConfig`, written before the solve so it survives a failure |
 | `Dispatch/CSV/` | always | successful solve (primal dispatch CSV/XLSX/TXT) |
 | `Dispatch/model_details.txt`, `Dispatch/model_summary.txt` | always | at model build (objective, variables, constraints). Box limits appear as `ineq_const` rows when `bound_encoding = CONSTRAINT`, or as equivalent ≤-form lines from `bound_manifest` when `bound_encoding = VARIABLE`. |
 | `Dispatch/CSV_duals/` | `save_duals=true` | successful solve (JuMP primal dual CSV + `Dispatch_Duals.xlsx`) |
@@ -264,6 +265,7 @@ below plus the model-shape gates (`network_form`, `gen_order`, `include_avr`,
 | `save_ts_debug_csv` | `RunConfig` | `false` | `Transient_Stability/CSV/Debug/` |
 | `save_optim_matrices` | `RunConfig` | `false` | `Optim_Matrices/` (steady-state only; forced off for TSC runs) |
 | `save_warmstart_dispatch` | `RunConfig` | `false` | `Dispatch_WarmStart/` (FULL_BUS TSC-ACOPF only) |
+| `run_script` | `RunConfig` | `nothing` | Copy of the configuring `.jl` file in the run-folder root; set it to `@__FILE__` in the run script |
 | `solve_explicit_dual` | `DispatchConfig` | `false` | `Dispatch_Dual/` (ED / DC-OPF only) |
 
 `TransientConfig`, `TsBuilderConfig` and `DynModelConfig` carry **no** export flags —

@@ -29,6 +29,14 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ### Added
 
+- **`RunConfig.run_script` archives the script that configured the run.** Set it to
+  `@__FILE__` in the run script and `run_case!` copies that `.jl` file, byte for byte,
+  into the run-folder root next to `input_parameters.txt` — so a `RESULTS/` folder
+  carries the configuration that produced it, comments included. Default `nothing`
+  keeps every existing run unchanged; a path that is not an existing file throws in
+  `validate_run_config!`. The copy is written before the solve, so it survives a
+  failed or iteration-limited run.
+
 - **`save_warmstart_dispatch` covers TSC-DCOPF.** The DC pre-solve that fixes the
   Taylor anchor `δ_ref` is a genuine pre-solve, and its dispatch was discarded.
   It now writes the same reports as the FULL_BUS warm start to
@@ -43,6 +51,32 @@ All notable changes to this project are documented here. Format follows [Keep a 
   TGOV1 rows too. DQ_4TH is unchanged; Kron rejects the value (see above).
 
 ### Fixed
+
+- **The AVR exciter row is normalised on the state instead of on `K_exc`.**
+  `eq_const_avr_exciter!` divided both field-voltage terms by `K_exc`
+  (`E_fd_unlim[t]·(1+c)/K_exc − E_fd[t−1]·(1−c)/K_exc − c·(2V_ref − V[t] − V[t−1]) = 0`);
+  it now multiplies the voltage-error term by the gain instead, leaving the `(1+c)`
+  coefficient on the state itself, as every other state ODE in the package does and as
+  the backward-Euler branch already did. The two forms differ by the constant factor
+  `K_exc` on the whole row, so trajectories are unchanged — but multipliers in
+  `dual_avr_E_fd.csv` scale by `K_exc`, so exciter duals are comparable only within one
+  convention.
+
+- **The TGOV1 valve integrator wound up against its own limiter.** `eq_const_gov_valve!`
+  advanced the raw state from `Pv_raw[t−1]`, making it a free integrator: under
+  `GOV_SMOOTH` it kept climbing for as long as the droop signal demanded while the output
+  sat pinned at the clamp, and the valve could not come off the limit until that
+  accumulated excess had been unwound. The previous-step term is now the **limited**
+  output `Pv[t−1]` — the anti-windup convention the AVR exciter has always used
+  (`eq_const_avr_exciter!` anchors on the saturated `E_fd`) — which caps the raw state one
+  step's valve travel beyond the limit. The post-fault window seam follows suit: `t=1` of
+  the valve ODE now anchors on the last fault-on *limited* valve output, as the turbine
+  row already did, rather than on the raw state. `Attach_Governor_fault!` /
+  `Attach_Governor_postf!` build the limiter before the valve ODE so the limited container
+  exists, mirroring `Attach_Avr_fault!`. `Pv` and `Pv_raw` are the same container under
+  `GOV_NO_LIMIT` and `GOV_HARD_BOUND` (both encodings), so those paths are unchanged
+  row-for-row and only `GOV_SMOOTH` changes behaviour. Exported variables, dual families
+  and column names are untouched.
 
 - **The TGOV1 turbine row let the valve limiter be bypassed.** `eq_const_gov_mech!`
   discretised the substituted state form

@@ -40,6 +40,15 @@
    GOV_HARD_BOUND — Pv is the ODE state + explicit ≤-form bounds (can be infeasible).
  Only the valve treatment differs between modes; the mech ODE always consumes the
  (possibly-limited) valve output Pv, and nothing else.
+
+ The valve integrator itself is **anti-windup**: its previous-step term is the limited
+ output Pv, not the raw state Pv_raw (the AVR exciter has always used this convention —
+ see `eq_const_avr_exciter!`).  With raw feedback the state is a free integrator, so
+ under GOV_SMOOTH it ramps past the clamp for as long as the droop signal demands and
+ must unwind that excess before the output can leave saturation.  Feeding the clamped
+ value back caps the raw state one step's travel beyond the limit instead.  For
+ GOV_NO_LIMIT / GOV_HARD_BOUND (both encodings) Pv *is* Pv_raw — the same container —
+ so those paths are unchanged row-for-row.
 ================================================================================
 =#
 
@@ -120,15 +129,22 @@ end
 # Valve ODE (trapezoidal): T1·dPv/dt = (P_ref − Δω)/R − Pv
 # ===================================================================================
 # `Pv_raw` is the integrated valve state (= Pv itself for NO_LIMIT/HARD_BOUND, or the
-# pre-saturation Pv_unlim for SMOOTH). `Pv_prev0`/`Δω_prev0` supply the t=1 anchor:
-# fault window → (P_m, 0.0); post-fault window → (last fault-on Pv_raw, last fault-on Δω).
+# pre-saturation Pv_unlim for SMOOTH); `Pv_sat` is the limited output that the previous-step
+# term feeds back (anti-windup). `Pv_prev0`/`Δω_prev0` supply the t=1 anchor: fault window →
+# (P_m, 0.0); post-fault window → (last fault-on *limited* Pv, last fault-on Δω).
 
-"""Valve-state update for one window: first step via `ode_first_step`, then trap."""
+"""Valve-state update for one window: first step via `ode_first_step`, then trap.
+
+The integrated state is `Pv_raw`, but the previous-step anchor is the **saturated** output
+`Pv_sat` (the exciter convention, see `eq_const_avr_exciter!`) — that is what makes the valve
+integrator anti-windup. `Pv_sat === Pv_raw` for every mode except `GOV_SMOOTH`, where the two
+differ by the clamp."""
 function eq_const_gov_valve!(
     model::JuMP.Model,
     active_gen::Vector{Int64},
     DGEN_DYN::DataFrame,
     Pv_raw::OrderedDict{Int, OrderedDict{Int, JuMP.VariableRef}},
+    Pv_sat::OrderedDict{Int, OrderedDict{Int, JuMP.VariableRef}},
     P_ref::OrderedDict{Int, JuMP.VariableRef},
     Δω::OrderedDict{Int, OrderedDict{Int, JuMP.VariableRef}},
     Pv_prev0::OrderedDict{Int, JuMP.VariableRef},
@@ -143,7 +159,7 @@ function eq_const_gov_valve!(
         c = Δt / (2 * T1)
         eq[gen] = OrderedDict{Int, JuMP.ConstraintRef}()
         for t in eachindex(time_window)
-            Pv_prev = t == 1 ? Pv_prev0[gen] : Pv_raw[gen][t - 1]
+            Pv_prev = t == 1 ? Pv_prev0[gen] : Pv_sat[gen][t - 1]
             if t == 1 && ode_first_step === :backward_euler
                 # --- BACKWARD EULER FOR STEP 1 (reference GFM path) ---
                 eq[gen][t] = JuMP.@constraint(model,
@@ -400,19 +416,23 @@ function Attach_Governor_fault!(
         eq_const_gov_setpoint_init!(model, active_gen, DGEN_DYN, P_ref, P_m)
     attach_gov_prefault_bounds!(model, dyn_model_dict)
 
-    # Raw valve state + limited output.
+    # Raw valve state + limited output. The limiter is built *before* the valve ODE because
+    # that ODE feeds the limited output back as its previous-step term (anti-windup), so the
+    # `Pv_tf` container has to exist first — same ordering as `Attach_Avr_fault!`.
     ode_fs = get(dyn_model_dict[:meta], :ode_first_step, :trapezoidal)
     Pv_raw_tf = var_gov_state_time!(model, active_gen, "P_valve_raw_tf", time_window, P_m)
     dyn_model_dict[:vars][:Pv_raw_tf] = Pv_raw_tf
-    dyn_model_dict[:eq_const][:eq_const_gov_valve_tf] = eq_const_gov_valve!(
-        model, active_gen, DGEN_DYN, Pv_raw_tf, P_ref, Δω_tf, P_m, 0.0, time_window, Δt;
-        ode_first_step=ode_fs)
 
     Pv_tf, limit_eq, limit_ineq = apply_gov_valve_limit!(
         model, limiter, active_gen, Pv_raw_tf, time_window, p_min, p_max;
         out_name="P_valve_tf", encoding=bound_encoding_from_meta(dyn_model_dict[:meta]))
     dyn_model_dict[:vars][:Pv_tf] = Pv_tf
     _store_gov_limit!(dyn_model_dict, "tf", limit_eq, limit_ineq, Pv_raw_tf)
+
+    # t=1 anchors on the pre-fault equilibrium, where Pv_raw = Pv = Pm = P_m (Δω = 0).
+    dyn_model_dict[:eq_const][:eq_const_gov_valve_tf] = eq_const_gov_valve!(
+        model, active_gen, DGEN_DYN, Pv_raw_tf, Pv_tf, P_ref, Δω_tf, P_m, 0.0, time_window, Δt;
+        ode_first_step=ode_fs)
 
     # Mechanical power. The turbine consumes the *limited* valve output Pv_tf only; the
     # t=1 anchor is the pre-fault equilibrium, where Pm = Pv = P_m.
@@ -429,7 +449,8 @@ end
 Attach the governor to the **post-fault** window and return `Pm_tpf`.
 
 Reuses `P_ref` from the fault-on call; the t=1 anchor is the last fault-on governor
-state (valve, mech) and last fault-on Δω, mirroring the swing/EMF continuity.
+state (the *limited* valve output and the mech state) and last fault-on Δω, mirroring
+the swing/EMF continuity.
 """
 function Attach_Governor_postf!(
     model::JuMP.Model,
@@ -448,8 +469,11 @@ function Attach_Governor_postf!(
     specs = dyn_model_dict[:meta][:var_limit_specs]
     p_min, p_max = _gov_valve_limit_dicts(active_gen, specs)
 
-    # Last fault-on states = post-fault t=1 anchors.
-    Pv_raw_last = OrderedDict(g => last(inner).second for (g, inner) in dyn_model_dict[:vars][:Pv_raw_tf])
+    # Last fault-on states = post-fault t=1 anchors. Both the valve and the turbine take the
+    # *limited* `Pv_out_last`: the valve because its previous-step term is the saturated output
+    # everywhere else in the window, the turbine because it never sees the raw state at all.
+    # Anchoring the valve on the raw state instead would leave a one-step discontinuity in the
+    # recurrence exactly at the window seam under GOV_SMOOTH.
     Pv_out_last = OrderedDict(g => last(inner).second for (g, inner) in dyn_model_dict[:vars][:Pv_tf])
     Pm_last     = OrderedDict(g => last(inner).second for (g, inner) in dyn_model_dict[:vars][:Pm_tf])
     Δω_last     = OrderedDict(g => last(inner).second for (g, inner) in dyn_model_dict[:vars][:Δω_tf])
@@ -457,9 +481,6 @@ function Attach_Governor_postf!(
     Pv_raw_tpf = var_gov_state_time!(model, active_gen, "P_valve_raw_tpf", time_window, P_m)
     dyn_model_dict[:vars][:Pv_raw_tpf] = Pv_raw_tpf
     ode_fs = get(dyn_model_dict[:meta], :ode_first_step, :trapezoidal)
-    dyn_model_dict[:eq_const][:eq_const_gov_valve_tpf] = eq_const_gov_valve!(
-        model, active_gen, DGEN_DYN, Pv_raw_tpf, P_ref, Δω_tpf, Pv_raw_last, Δω_last, time_window, Δt;
-        ode_first_step=ode_fs)
 
     Pv_tpf, limit_eq, limit_ineq = apply_gov_valve_limit!(
         model, limiter, active_gen, Pv_raw_tpf, time_window, p_min, p_max;
@@ -467,9 +488,13 @@ function Attach_Governor_postf!(
     dyn_model_dict[:vars][:Pv_tpf] = Pv_tpf
     _store_gov_limit!(dyn_model_dict, "tpf", limit_eq, limit_ineq, Pv_raw_tpf)
 
+    dyn_model_dict[:eq_const][:eq_const_gov_valve_tpf] = eq_const_gov_valve!(
+        model, active_gen, DGEN_DYN, Pv_raw_tpf, Pv_tpf, P_ref, Δω_tpf,
+        Pv_out_last, Δω_last, time_window, Δt; ode_first_step=ode_fs)
+
     # The turbine anchor is `Pv_out_last` — the *limited* valve output of the last fault-on
-    # step, not `Pv_raw_last`. Under GOV_SMOOTH the two differ exactly by the clamp, and
-    # feeding the raw state here would leak the unsaturated signal across the window seam.
+    # step, never the raw integrator state. Under GOV_SMOOTH the two differ exactly by the
+    # clamp, and feeding the raw state here would leak the unsaturated signal across the seam.
     Pm_tpf = var_gov_state_time!(model, active_gen, "P_mech_tpf", time_window, P_m)
     dyn_model_dict[:vars][:Pm_tpf] = Pm_tpf
     dyn_model_dict[:eq_const][:eq_const_gov_mech_tpf] = eq_const_gov_mech!(

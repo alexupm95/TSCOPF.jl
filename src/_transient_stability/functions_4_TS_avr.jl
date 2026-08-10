@@ -146,20 +146,20 @@ function eq_const_avr_exciter!(
             if t == 1 && ode_first_step === :backward_euler
                 # --- BACKWARD EULER FOR STEP 1 (reference GFM path) ---
                 eq[gen][t] = JuMP.@constraint(model,
-                    E_fd_unlim[gen][t] * (1 + Δt / T_exc) / K_exc - E_fd_prev / K_exc
-                    - (Δt / T_exc) * (V_ref[gen] - V_curr) == 0.0)
+                    E_fd_unlim[gen][t] * (1 + Δt / T_exc) - E_fd_prev
+                    - ((K_exc*Δt) / T_exc) * (V_ref[gen] - V_curr) == 0.0)
             elseif t == 1
                 # --- TRAPEZOIDAL AT t=1 (SG pin default) ---
                 V_prev = _avr_at(V_prev0, bus)
                 eq[gen][t] = JuMP.@constraint(model,
-                    E_fd_unlim[gen][t] * (1 + c) / K_exc - E_fd_prev * (1 - c) / K_exc
-                    - c * (2 * V_ref[gen] - V_curr - V_prev) == 0.0)
+                    E_fd_unlim[gen][t] * (1 + c) - E_fd_prev * (1 - c)
+                    - (K_exc * c) * (2 * V_ref[gen] - V_curr - V_prev) == 0.0)
             else
                 # --- TRAPEZOIDAL FOR REMAINDER ---
                 V_prev = V_terminal[bus][t - 1]
                 eq[gen][t] = JuMP.@constraint(model,
-                    E_fd_unlim[gen][t] * (1 + c) / K_exc - E_fd_prev * (1 - c) / K_exc
-                    - c * (2 * V_ref[gen] - V_curr - V_prev) == 0.0)
+                    E_fd_unlim[gen][t] * (1 + c) - E_fd_prev * (1 - c)
+                    - (K_exc * c) * (2 * V_ref[gen] - V_curr - V_prev) == 0.0)
             end
         end
     end

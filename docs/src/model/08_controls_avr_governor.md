@@ -70,13 +70,15 @@ The window ODEs are trapezoidal. With $c = \Delta t / (2 T_{\mathrm{exc},g})$, t
     ```math
     \begin{equation}
     \label{eq:avr-trap-8}
-    \frac{\tilde{E}_{fd,g}^{\,t}(1+c)}{K_{\mathrm{exc},g}}
-      - \frac{E_{fd,g}^{\,t-1}(1-c)}{K_{\mathrm{exc},g}}
-      - c\left(2V_{\mathrm{ref},g} - V_{k(g)}^{t} - V_{k(g)}^{t-1}\right) = 0 .
+    \tilde{E}_{fd,g}^{\,t}(1+c)
+      - E_{fd,g}^{\,t-1}(1-c)
+      - K_{\mathrm{exc},g}\,c\left(2V_{\mathrm{ref},g} - V_{k(g)}^{t} - V_{k(g)}^{t-1}\right) = 0 .
     \end{equation}
     ```
 
     Two details that are easy to miss. First, the previous-step anchor is the **saturated** $E_{fd}^{t-1}$, not the raw state $\tilde{E}_{fd}^{\,t-1}$ — this is the anti-windup behaviour: once the clamp is active, the integrator is fed back its limited output rather than its own unlimited history. Second, $t=1$ of each window anchors across the window boundary: the fault window uses the pre-fault scalar pair $(E_{fd,g}, V_{k(g)})$, the post-fault window uses the last fault-on pair.
+
+    The row is normalised on the state, not on $K_{\mathrm{exc},g}$: the gain multiplies the voltage-error term instead of dividing the two field-voltage terms. Both forms describe the same ODE — they differ by the constant factor $K_{\mathrm{exc},g}$ on the whole row — but this one keeps the $(1+c)$ coefficient on $\tilde{E}_{fd}$ that every other state ODE in the package uses, and matches the backward-Euler row below. Multipliers in `dual_avr_E_fd.csv` therefore scale by $K_{\mathrm{exc},g}$ relative to runs made before this convention: compare exciter duals only within one convention.
 
 Setting `DynModelConfig.ode_first_step = :backward_euler` replaces the $t=1$ row of each window with the backward-Euler form $\tilde{E}_{fd}^{\,1}(1 + \Delta t/T_{\mathrm{exc}}) - E_{fd}^{\,0} = (\Delta t/T_{\mathrm{exc}})K_{\mathrm{exc}}(V_{\mathrm{ref}} - V^1)$, which matches the reference implementation. Every subsequent step stays trapezoidal under either setting. The switch exists for parity investigation; `:trapezoidal` is the package default and the pinned SG behaviour.
 
@@ -139,12 +141,14 @@ The builder stamps the valve lag as a first-order ODE and the turbine lead-lag e
 
     $\eqref{eq:gov-mech-8}$ consumes the **limited** valve output $P_{v,g}$ and nothing else — no $P_{\mathrm{ref}}$, no $\Delta\omega$, no $R_g$ or $T_{1,g}$ — while $\eqref{eq:gov-valve-8}$ integrates the **raw** state $\tilde{P}_{v,g}$. Under `GOV_NO_LIMIT` and `GOV_HARD_BOUND` the two coincide; under `GOV_SMOOTH` they differ by the clamp, and the turbine sees only the clamped signal.
 
+    The valve integrator is **anti-windup**, exactly as the exciter is: the discrete form of $\eqref{eq:gov-valve-8}$ advances $\tilde{P}_{v,g}^{t}$ from the *limited* $P_{v,g}^{t-1}$, not from $\tilde{P}_{v,g}^{t-1}$. Integrating the raw state against itself makes it a free integrator — under `GOV_SMOOTH` it keeps climbing for as long as the droop signal demands while the output sits pinned at the clamp, and the machine cannot come off the limit until that accumulated excess has been unwound. With the clamped value fed back, $\tilde{P}_{v,g}$ can overshoot the limit by at most one step's valve travel. Where $P_{v,g} \equiv \tilde{P}_{v,g}$ the distinction is vacuous, so `GOV_NO_LIMIT` and `GOV_HARD_BOUND` stamp the same rows either way.
+
 !!! warning "Why not the substituted state form"
     Eliminating $\dot{P}_v$ with $\eqref{eq:gov-valve-8}$ turns $\eqref{eq:gov-mech-8}$ into the familiar two-state form
     $T_3\dot{P}_m = (1 - T_2/T_1)P_v + \bigl[(T_2/T_1)/R\bigr](P_{\mathrm{ref}} - \Delta\omega) - P_m$,
     which the code used until it was found to be wrong under saturation. That substitution is exact only while the valve is unsaturated: once a limiter clamps $P_v$, $\dot{P}_v \neq \bigl[(P_{\mathrm{ref}}-\Delta\omega)/R - P_v\bigr]/T_1$, yet the feedforward term keeps injecting the raw, unclamped droop signal into the mechanical power — the limiter is bypassed and valve saturation never caps $P_m$ when $T_2 > 0$. Substituting the *discrete* valve equality into the *discrete* substituted mech row recovers $\eqref{eq:gov-mech-8}$ row-for-row, trapezoidal and backward Euler alike, so the two forms are identical whenever the valve is free and differ only where the old one was unphysical.
 
-Discretisation follows the same pattern as the exciter: trapezoidal, $c = \Delta t/(2T_1)$ for the valve and $c = \Delta t/(2T_3)$ for the turbine, with $\eqref{eq:gov-mech-8}$ integrated on both sides and then divided through by $2T_{3,g}$ so the row keeps the same $(1+c)$ normalisation — its multiplier therefore stays on the scale it had under the old form. $t=1$ of the fault window is anchored at $(\tilde{P}_v, P_v, P_m, \Delta\omega) = (P_{m,g}, P_{m,g}, P_{m,g}, 0)$ and $t=1$ of the post-fault window at the last fault-on values, the turbine taking the **limited** $P_{v,g}$ there as well; the same `ode_first_step` override applies to the first row of each window.
+Discretisation follows the same pattern as the exciter: trapezoidal, $c = \Delta t/(2T_1)$ for the valve and $c = \Delta t/(2T_3)$ for the turbine, with $\eqref{eq:gov-mech-8}$ integrated on both sides and then divided through by $2T_{3,g}$ so the row keeps the same $(1+c)$ normalisation — its multiplier therefore stays on the scale it had under the old form. $t=1$ of the fault window is anchored at $(\tilde{P}_v, P_v, P_m, \Delta\omega) = (P_{m,g}, P_{m,g}, P_{m,g}, 0)$ and $t=1$ of the post-fault window at the last fault-on values, valve **and** turbine both taking the **limited** $P_{v,g}$ there — anything else would put a one-step discontinuity in the valve recurrence at the window seam; the same `ode_first_step` override applies to the first row of each window.
 
 ### Initialisation and the $R$-scaled set-point
 

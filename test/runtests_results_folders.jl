@@ -58,6 +58,28 @@ include(joinpath(@__DIR__, "test_env.jl"))
         @test !isdir(pn[:pf_dispatch_dual])
     end
 
+    # `run_script` archives the .jl file that built the RunConfig into the run folder
+    # root, so a RESULTS/ directory carries the configuration that produced it.
+    @testset "run_script archival" begin
+        script = joinpath(mktempdir(), "my_run_config.jl")
+        write(script, "# marker\n")
+        cfg = dispatch_run_config(
+            type_model="ED",
+            save_matrices=false,
+            save_duals=false,
+            run_script=script,
+            overwrite_results=TEST_OVERWRITE_RESULTS,
+        )
+        sys = load_system(cfg, path_main)
+        pn = run_case!(cfg, sys, path_main, path_results).path_names
+        dst = joinpath(pn[:pf_results_date], "my_run_config.jl")
+        @test isfile(dst)
+        @test read(dst, String) == "# marker\n"   # byte-for-byte copy, not a summary
+        # A missing path is rejected up front, not after the solve.
+        @test_throws ArgumentError validate_run_config!(dispatch_run_config(
+            type_model="ED", run_script=joinpath(pn[:pf_results_date], "nope.jl")))
+    end
+
     @testset "MATPOWER import — Inputs/ only" begin
         case_m = fixture_matpower("case9.m")
         isfile(case_m) || return  # skip if MATPOWER case not bundled

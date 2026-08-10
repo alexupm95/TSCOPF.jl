@@ -303,6 +303,45 @@ end
         end
     end
 
+    @testset "governor valve row feeds back the limited valve (structural)" begin
+        # The valve integrator is anti-windup: its previous-step term is the *limited* output
+        # Pv_sat, not the raw state it integrates. With raw feedback the state is a free
+        # integrator, so under GOV_SMOOTH it ramps past the clamp and has to unwind that excess
+        # before the output can leave saturation. `Pv_sat === Pv_raw` for every other mode, so
+        # only distinct containers expose the difference — which is what this builds.
+        gens = [1, 2]; nt = 3
+        Δt = 0.02
+        DGEN_DYN = DataFrame(R = [0.05, 0.04], T1 = [0.5, 0.3])
+
+        m      = JuMP.Model()
+        Pv_raw = _toy_gen_time_vars(m, gens, nt, "Pv_raw")
+        Pv_sat = _toy_gen_time_vars(m, gens, nt, "Pv_sat")
+        Δω     = _toy_gen_time_vars(m, gens, nt, "dw")
+        P_ref  = OrderedDict(g => JuMP.@variable(m, base_name = "P_ref[$g]") for g in gens)
+        Pv0    = OrderedDict(g => JuMP.@variable(m, base_name = "Pv0[$g]") for g in gens)
+
+        eq = TSCOPF.eq_const_gov_valve!(m, gens, DGEN_DYN, Pv_raw, Pv_sat, P_ref, Δω,
+                                        Pv0, 0.0, zeros(nt), Δt; ode_first_step = :trapezoidal)
+
+        for g in gens
+            R, T1 = DGEN_DYN.R[g], DGEN_DYN.T1[g]
+            c = Δt / (2 * T1)
+            for t in 1:nt
+                con = eq[g][t]
+                @test JuMP.normalized_coefficient(con, Pv_raw[g][t]) ≈ (1 + c)
+                if t == 1
+                    @test JuMP.normalized_coefficient(con, Pv0[g]) ≈ -(1 - c)
+                else
+                    # The history term is the saturated output; the raw state of the previous
+                    # step must not appear in the row at all.
+                    @test JuMP.normalized_coefficient(con, Pv_sat[g][t - 1]) ≈ -(1 - c)
+                    @test JuMP.normalized_coefficient(con, Pv_raw[g][t - 1]) == 0.0
+                end
+                @test JuMP.normalized_coefficient(con, P_ref[g]) ≈ -Δt / (R * T1)
+            end
+        end
+    end
+
     # ====================================================================== #
     #  End-to-end solves (heavy tier)                                        #
     # ====================================================================== #

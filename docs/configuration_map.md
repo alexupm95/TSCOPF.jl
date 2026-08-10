@@ -53,6 +53,7 @@ Shared knobs for dispatch-only and TSC runs. Does **not** carry `type_model`, `�
 | TSC trajectory figures | `save_ts_plots` | `false` | `Transient_Stability/Figures/` (Plots.jl); requires `trans_stab=true` |
 | TS diagnostic dumps | `save_ts_debug_csv` | `false` | `Transient_Stability/CSV/Debug/`: `gfm_{filter,limiter,voltage}_debug.csv` + `swing_debug.csv`, one row per (window, gen, step) with value, margin and dual |
 | Pre-solve dispatch archive | `save_warmstart_dispatch` | `false` | `Dispatch_WarmStart/` on the two TSC paths that pre-solve a steady-state OPF: FULL_BUS TSC-ACOPF (warm start) and Kron TSC-DCOPF (δ_ref anchor, plus `CSV/delta_ref.csv`). Throws elsewhere. |
+| Run-script archive | `run_script` | `nothing` | `nothing` = off. Set to `@__FILE__` in the run script to copy that `.jl` file, byte for byte, into the run-folder root next to `input_parameters.txt`. Any readable path is accepted; a non-existent one throws in `validate_run_config!`. |
 | Steady-state builder config | `dispatch` | `DispatchConfig()` | Avenue 1 |
 | Transient bundle | `transient` | `nothing` | Avenue 2; required when `trans_stab=true` |
 | MATPOWER input file | `matpower_file` | `nothing` | `nothing` = CSV mode (default). Set to `"case9.m"` (relative to case folder) or an absolute path to load steady-state data from a MATPOWER `.m` file instead of the three CSVs. Dynamic data (`gen_dynamic_data.csv`) is always read from the case folder regardless. See §6.1 of the user guide. |

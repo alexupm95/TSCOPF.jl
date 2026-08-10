@@ -86,6 +86,11 @@ Base.@kwdef struct RunConfig
     # TSC runs that pre-solve a steady-state OPF before TS assembly (FULL_BUS ACOPF
     # warm start, TSC-DCOPF δ_ref anchor): archive that solution to Dispatch_WarmStart/.
     save_warmstart_dispatch::Bool = false
+    # Archive the script that configured this run. `nothing` = off; set it to
+    # `@__FILE__` in the run script to drop a byte-for-byte copy of that file into
+    # the run folder, next to input_parameters.txt. Any readable path works (a
+    # sweep driver can archive its own driver file).
+    run_script::Union{Nothing, String} = nothing
 
     # --- avenue 1: steady-state dispatch -------------------------------------
     dispatch::DispatchConfig = DispatchConfig()
@@ -159,6 +164,13 @@ function validate_run_config!(cfg::RunConfig)
             "save_warmstart_dispatch=true requires a TSC run with a steady-state pre-solve: " *
             "either dispatch.type_model=\"ACOPF\" with network_form=FULL_BUS (ACOPF warm start) " *
             "or dispatch.type_model=\"DCOPF\" with network_form=KRON_REDUCED (δ_ref anchor)."))
+    end
+    # Caught here rather than at export time: a typo in the path should not surface
+    # after a long solve, when the run folder already exists.
+    if cfg.run_script !== nothing && !isfile(cfg.run_script)
+        throw(ArgumentError(
+            "run_script points at no readable file: $(cfg.run_script). " *
+            "Use `run_script = @__FILE__` inside the run script, or `nothing` to disable."))
     end
     if is_ipopt_backend_solver(cfg.solver_name)
         validate_ipopt_solver_config!(cfg.ipopt, cfg.solver_name)
@@ -687,6 +699,15 @@ function run_case!(cfg::RunConfig, sys::SystemData,
                 cfg.transient.gfm_dynamic_filename : nothing,
             matpower_file = cfg.matpower_file,
         )
+    end
+
+    # Archive the script that configured this run, alongside input_parameters.txt.
+    # Done before the solve on purpose: a run that fails or hits the iteration limit
+    # is exactly when the source configuration matters most.
+    if cfg.run_script !== nothing
+        cp(cfg.run_script,
+           joinpath(path_names[:pf_results_date], basename(cfg.run_script));
+           force = true)   # force: overwrite_results=true reuses one folder across runs
     end
 
     # --- optimiser setup ------------------------------------------------------

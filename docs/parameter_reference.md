@@ -34,6 +34,7 @@ These fields apply to **both** plain OPF and TSC runs.
 | `save_ts_plots` | `Bool` | `false` | TSC only: trajectory SVG figures under `Transient_Stability/Figures/`, plus the δ-COI dual figures under `Figures_Duals/` when `save_duals` is also on (opt-in; uses Plots.jl). CSV/TXT transient results are still saved when `trans_stab=true`. On a headless machine `load_plots_extension!` sets `GKSwstype=100` so GR writes to file instead of failing to open a window. |
 | `save_ts_debug_csv` | `Bool` | `false` | TSC only: per-(window, generator, step) diagnostic dumps under `Transient_Stability/CSV/Debug/` — value, distance to the limit and dual on one row. Writes `gfm_filter_debug.csv`, `gfm_limiter_debug.csv`, `gfm_voltage_debug.csv` (mixed-fleet runs) and `swing_debug.csv`. Opt-in: the filter file alone is three rows per converter per step. **`swing_debug.csv` uses the Greek variable names of the model (`δ_curr`, `Δω_step`, …) in its header.** The file is UTF-8 without a BOM, so opening it by double-click in Excel decodes it as ANSI and mangles those names; import it instead (Data → From Text/CSV → 65001 Unicode UTF-8). Every other exported CSV uses ASCII headers. |
 | `save_warmstart_dispatch` | `Bool` | `false` | TSC runs that pre-solve a steady-state OPF before assembling the dynamics: writes that solution to `Dispatch_WarmStart/` (same reports as `Dispatch/`; dual export follows `save_duals`). Two such paths — **FULL_BUS TSC-ACOPF** (the mandatory ACOPF warm start) and **Kron TSC-DCOPF** (the DC solve that fixes the Taylor anchor, which also writes `CSV/delta_ref.csv`). Throws on Kron TSC-ACOPF, which solves once jointly and has no pre-solve, and on steady-state runs. |
+| `run_script` | `String` or `nothing` | `nothing` | Archive the script that configured the run. Set it to `@__FILE__` inside the run script and `run_case!` copies that `.jl` file, byte for byte, into the run-folder root next to `input_parameters.txt` and `solver_log.txt` — so a `RESULTS/` folder carries the exact configuration that produced it, comments included. Any readable path is accepted (a sweep driver can archive itself); a path that is not an existing file throws in `validate_run_config!`, before any model is built. The copy is written right after the folder is created, so it survives a failed or iteration-limited solve. Sweeps that call `run_case!` per `reconfigure`d iteration get one copy per timestamped folder. |
 | `dispatch` | `DispatchConfig` | `DispatchConfig()` | Avenue 1 — see §2 |
 | `transient` | `TransientConfig` or `nothing` | `nothing` | Avenue 2 — see §3; **required** when `trans_stab=true` |
 
@@ -460,7 +461,9 @@ The set-point is pinned to the dispatch (`P_ref=R·P_m`, `P_m=P_g`). Valve satur
 Governor trajectories are written to `Transient_Stability/CSV/governor_*.csv`
 (`P_mech`, `P_valve`, `P_valve_raw`, `P_ref`), with SVG figures for the three time series when
 `save_ts_plots=true`. `P_valve_raw` is the integrator state ahead of the limiter, so
-`P_valve_raw − P_valve` is the clamp actually applied under `GOV_SMOOTH`.
+`P_valve_raw − P_valve` is the clamp actually applied under `GOV_SMOOTH`. The integrator is
+anti-windup — each step advances from the *limited* `P_valve` of the previous step — so that
+gap stays within one step's valve travel instead of growing while the valve sits on its limit.
 
 Duals `dual_Pref_init`, `dual_gov_valve`, `dual_gov_mech` join the standard TS dual export, plus
 one limiter family depending on the mode: `dual_gov_valve_sat` (`GOV_SMOOTH` clamp equality) or
