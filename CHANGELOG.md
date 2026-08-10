@@ -57,10 +57,14 @@ All notable changes to this project are documented here. Format follows [Keep a 
   (`E_fd_unlim[t]·(1+c)/K_exc − E_fd[t−1]·(1−c)/K_exc − c·(2V_ref − V[t] − V[t−1]) = 0`);
   it now multiplies the voltage-error term by the gain instead, leaving the `(1+c)`
   coefficient on the state itself, as every other state ODE in the package does and as
-  the backward-Euler branch already did. The two forms differ by the constant factor
-  `K_exc` on the whole row, so trajectories are unchanged — but multipliers in
-  `dual_avr_E_fd.csv` scale by `K_exc`, so exciter duals are comparable only within one
-  convention.
+  Part I §8 already documented the backward-Euler row (the code divided in both branches;
+  the prose did not). The two forms differ by the constant factor `K_exc` on the whole
+  row, so the feasible set and every trajectory are unchanged — but the multiplier scales
+  inversely: `dual_avr_E_fd` values are now `λ_old / K_exc`. Two consequences worth
+  knowing. Exciter duals from before this change need dividing by that machine's `K_exc`
+  before they can be compared with new ones. And because the old row was divided by each
+  machine's *own* gain, exciter multipliers were never comparable across a fleet with
+  heterogeneous `K_exc`, nor against the swing and EMF duals; now they are.
 
 - **The TGOV1 valve integrator wound up against its own limiter.** `eq_const_gov_valve!`
   advanced the raw state from `Pv_raw[t−1]`, making it a free integrator: under

@@ -1,7 +1,7 @@
 name = "TSCOPF"
 uuid = "1f9dcd41-2959-45ec-ae96-6d9d1a7be86b"
 authors = ["Alex Junior da Cunha Coelho"]
-version = "0.2.3"
+version = "0.2.4"
 
 [deps]
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
