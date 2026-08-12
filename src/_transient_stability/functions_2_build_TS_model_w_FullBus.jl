@@ -8,7 +8,7 @@
  Architecture mirrors the Kron path:
  - `build_ts_input_param(ts_builder)` + explicit `@constraint` bounds when `var_bounds[k]=true`
  - One builder per variable / constraint family (`var_fullbus_*`, `eq_const_fullbus_*`)
- - `bound_style` dispatches δ-COI stability; `constrain_Δω_COI` gates Δω-COI bounds
+ - `bound_style_δ` dispatches δ-COI stability; `constrain_Δω` gates Δω-COI bounds
  - Mandatory ACOPF warm start (`SteadyStateHints`); model TXT export before `optimize!`
 ================================================================================
 =#
@@ -33,7 +33,7 @@ that are stored (by family) in the returned `dyn_model_dict`:
 
 Key choices:
 - `mech_power_mode` must be `USE_PM` (explicit mechanical-power variable P_m).
-- `bound_style` selects the δ-COI stability bound flavour; `constrain_Δω_COI` optionally
+- `bound_style_δ` selects the δ-COI stability bound flavour; `constrain_Δω` optionally
   adds speed-deviation COI bounds.
 - `zip_load_p` / `zip_load_q` = independent (Z, I, P) load splits for the active and the
   reactive nodal balance (a TSO may model P as constant current and Q as constant admittance).
@@ -58,8 +58,11 @@ function Make_Dynamic_Model_fullbus!(
     simulation::TsSimulationConfig=TsSimulationConfig(),
     ts_builder::TsBuilderConfig=TsBuilderConfig(),
     mech_power_mode::MechPowerMode=USE_PM,
-    bound_style::Symbol=:coi_box,
-    constrain_Δω_COI::Bool=false,
+    constrain_δ::Bool=true,
+    bound_style_δ::Symbol=:coi_box,
+    δ_ref_gen_id::Union{Nothing, Int}=nothing,
+    constrain_Δω::Bool=false,
+    bound_style_Δω::Symbol=:coi_box,
     Δω_tol::Tuple{Float64, Float64}=(-0.5, 0.5),
     zip_load_p::NTuple{3, Float64}=(1.0, 0.0, 0.0),
     zip_load_q::NTuple{3, Float64}=(1.0, 0.0, 0.0),
@@ -87,8 +90,11 @@ function Make_Dynamic_Model_fullbus!(
     dyn_model_dict[:ineq_const] = OrderedDict{Symbol, Any}()
     dyn_model_dict[:meta] = OrderedDict{Symbol, Any}(
         :mech_power_mode => mech_power_mode,
-        :bound_style => bound_style,
-        :constrain_Δω_COI => constrain_Δω_COI,
+        :constrain_δ => constrain_δ,
+        :bound_style_δ => bound_style_δ,
+        :δ_ref_gen_id => δ_ref_gen_id,
+        :constrain_Δω => constrain_Δω,
+        :bound_style_Δω => bound_style_Δω,
         :Δω_tol => Δω_tol,
         :network_form => "FULL_BUS",
         :coupling_init_source => "acopf_warmstart",   # the only FULL_BUS coupling path
@@ -304,9 +310,9 @@ function Make_Dynamic_Model_fullbus!(
 
     dyn_parameters_dict[:common] = OrderedDict{Symbol, Any}(
         :δ_tol => δ_tol, :f_syn => f_syn, :ω_syn => ω_syn, :Δω_0 => Δω_0,
-        :constrain_Δω_COI => constrain_Δω_COI,
+        :constrain_Δω => constrain_Δω,
     )
-    if constrain_Δω_COI
+    if constrain_Δω
         dyn_parameters_dict[:common][:Δω_tol] = Δω_tol
     end
 
@@ -423,8 +429,8 @@ and the swing dynamics on the faulted `Ybus`.
 Pipeline (each family stored in `dyn_model_dict`):
 1. Time-indexed variables: bus V_tf/θ_tf, generator Pe_tf/Qe_tf/δ_tf/Δω_tf (the "tf"
    suffix tags the fault-on window).
-2. Center-of-inertia angle δCOI_tf and the δ-COI stability bounds (`bound_style`).
-3. Optional Δω-COI variable + bounds when `constrain_Δω_COI` is set.
+2. Center-of-inertia angle δCOI_tf and the δ-COI stability bounds (`bound_style_δ`).
+3. Optional Δω-COI variable + bounds when `constrain_Δω` is set.
 4. Network: classical Pe/Qe at each internal node, the nodal injection expressions from
    Ybus, and the ZIP active/reactive power-balance equalities.
 5. Swing equations (trapezoidal): δ integrates ω·Δω, Δω integrates (P_m − P_e)/2H − D·Δω.
@@ -491,30 +497,19 @@ function Define_Fault_Dynamic_Model_fullbus!(
 
     # Center-of-inertia (COI) rotor angle: inertia-weighted mean of δ. Stability is judged
     # on each machine's deviation from this COI reference, not on absolute angles.
-    δCOI_tf = var_kron_COI_time_generic!(model, "δCOI_tf", time_window)
-    dyn_model_dict[:vars][:δCOI_tf] = δCOI_tf
-    dyn_model_dict[:eq_const][:eq_const_δCOI_tf] = eq_const_kron_COI_generic!(
-        model, δ_tf, δCOI_tf, active_gen, DGEN_DYN, time_window)
+    δCOI_tf = _attach_δCOI!(model, dyn_model_dict, δ_tf, active_gen, DGEN_DYN,
+        time_window, :tf)
 
     attach_fault_tf_var_bounds!(model, dyn_model_dict)
 
-    # δ-COI stability bounds (flavour set by `bound_style`).
-    _add_δ_COI_bounds_fault!(
+    # δ-COI stability bounds (flavour set by `bound_style_δ`).
+    _add_δ_bounds_fault!(
         model, dyn_model_dict, active_gen, DGEN_DYN, P_mech, δ_tf, δCOI_tf,
         Δω_tf, Pe_tf, time_window, δ_tol, δ_0, Δω_0, ω_syn, Δt)
 
     # Optional speed-deviation COI bounds (|Δω_g − Δω_COI| ≤ tol).
-    if get(dyn_model_dict[:meta], :constrain_Δω_COI, false)
-        Δω_tol = dyn_model_dict[:meta][:Δω_tol]
-        ΔωCOI_tf = var_kron_COI_time_generic!(model, "ΔωCOI_tf", time_window)
-        dyn_model_dict[:vars][:ΔωCOI_tf] = ΔωCOI_tf
-        dyn_model_dict[:eq_const][:eq_const_ΔωCOI_tf] = eq_const_kron_COI_generic!(
-            model, Δω_tf, ΔωCOI_tf, active_gen, DGEN_DYN, time_window)
-        dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tf_lower],
-        dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tf_upper] =
-            ineq_const_kron_Δω_COI_generic!(
-                model, active_gen, Δω_tf, ΔωCOI_tf, time_window, Δω_tol)
-    end
+    # Optional speed corridor (reference set by `bound_style_Δω`).
+    _add_Δω_bounds!(model, dyn_model_dict, :tf, active_gen, DGEN_DYN, Δω_tf, time_window)
 
     # Classical machine electrical injections (Pe, Qe) as functions of E, δ and terminal V, θ.
     dyn_model_dict[:eq_const][:eq_const_Pe_tf] = eq_const_fullbus_gen_Pe!(
@@ -638,28 +633,16 @@ function Define_PostFault_Dynamic_Model_fullbus!(
     dyn_model_dict[:vars][:δ_tpf] = δ_tpf
     dyn_model_dict[:vars][:Δω_tpf] = Δω_tpf
 
-    δCOI_tpf = var_kron_COI_time_generic!(model, "δCOI_tpf", time_window)
-    dyn_model_dict[:vars][:δCOI_tpf] = δCOI_tpf
-    dyn_model_dict[:eq_const][:eq_const_δCOI_tpf] = eq_const_kron_COI_generic!(
-        model, δ_tpf, δCOI_tpf, active_gen, DGEN_DYN, time_window)
+    δCOI_tpf = _attach_δCOI!(model, dyn_model_dict, δ_tpf, active_gen, DGEN_DYN,
+        time_window, :tpf)
 
     attach_postfault_tpf_var_bounds!(model, dyn_model_dict)
 
-    _add_δ_COI_bounds_postf!(
+    _add_δ_bounds_postf!(
         model, dyn_model_dict, active_gen, DGEN_DYN, P_mech, δ_tpf, δCOI_tpf,
         Δω_tpf, Pe_tpf, time_window, δ_tol, δ_ant, Δω_ant, Pe_ant, ω_syn, Δt)
 
-    if get(dyn_model_dict[:meta], :constrain_Δω_COI, false)
-        Δω_tol = dyn_model_dict[:meta][:Δω_tol]
-        ΔωCOI_tpf = var_kron_COI_time_generic!(model, "ΔωCOI_tpf", time_window)
-        dyn_model_dict[:vars][:ΔωCOI_tpf] = ΔωCOI_tpf
-        dyn_model_dict[:eq_const][:eq_const_ΔωCOI_tpf] = eq_const_kron_COI_generic!(
-            model, Δω_tpf, ΔωCOI_tpf, active_gen, DGEN_DYN, time_window)
-        dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tpf_lower],
-        dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tpf_upper] =
-            ineq_const_kron_Δω_COI_generic!(
-                model, active_gen, Δω_tpf, ΔωCOI_tpf, time_window, Δω_tol)
-    end
+    _add_Δω_bounds!(model, dyn_model_dict, :tpf, active_gen, DGEN_DYN, Δω_tpf, time_window)
 
     dyn_model_dict[:eq_const][:eq_const_Pe_tpf] = eq_const_fullbus_gen_Pe!(
         model, active_gen, DGEN, DGEN_DYN, E, Pe_tpf, δ_tpf, V_tpf, θ_tpf, time_window)

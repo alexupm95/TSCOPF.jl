@@ -33,9 +33,12 @@ function Make_Dynamic_Model_tsredlinear!(
     simulation::TsSimulationConfig=TsSimulationConfig(),
     ts_builder::TsBuilderConfig=TsBuilderConfig(),
     mech_power_mode::MechPowerMode=USE_PG,
-    constrain_Δω_COI::Bool=false,
+    constrain_δ::Bool=true,
+    bound_style_δ::Symbol=:swing_propagated,
+    δ_ref_gen_id::Union{Nothing, Int}=nothing,
+    constrain_Δω::Bool=false,
+    bound_style_Δω::Symbol=:coi_box,
     Δω_tol::Tuple{Float64, Float64}=(-0.5, 0.5),
-    bound_style::Symbol=:swing_propagated,
     )
 
     ts_input_param = build_ts_input_param(ts_builder)
@@ -45,9 +48,12 @@ function Make_Dynamic_Model_tsredlinear!(
     dyn_model_dict[:ineq_const] = OrderedDict{Symbol, Any}()
     dyn_model_dict[:meta] = OrderedDict{Symbol, Any}(
         :mech_power_mode => mech_power_mode,
-        :constrain_Δω_COI => constrain_Δω_COI,
+        :constrain_δ => constrain_δ,
+        :bound_style_δ => bound_style_δ,
+        :δ_ref_gen_id => δ_ref_gen_id,
+        :constrain_Δω => constrain_Δω,
+        :bound_style_Δω => bound_style_Δω,
         :Δω_tol => Δω_tol,
-        :bound_style => bound_style,
         :fault_type => ts_fault_details[:fault_type],
         :ineq_cons => ts_input_param[:ineq_cons],
         :var_bounds => ts_input_param[:var_bounds],
@@ -247,8 +253,8 @@ function Make_Dynamic_Model_tsredlinear!(
         dyn_parameters_dict[:common][:f_syn] = f_syn
         dyn_parameters_dict[:common][:ω_syn] = ω_syn
         dyn_parameters_dict[:common][:Δω_0] = Δω_0
-        dyn_parameters_dict[:common][:constrain_Δω_COI] = constrain_Δω_COI
-        if constrain_Δω_COI
+        dyn_parameters_dict[:common][:constrain_Δω] = constrain_Δω
+        if constrain_Δω
             dyn_parameters_dict[:common][:Δω_tol] = Δω_tol
         end
     end
@@ -344,35 +350,26 @@ function Define_Fault_Dynamic_Model_tsredlinear!(model::JuMP.Model,
     δ_tf  = var_kron_gen_time_generic!(model, active_gen, "δ_tf",  time_window)
     Δω_tf = var_kron_gen_time_generic!(model, active_gen, "Δω_tf", time_window)
     Pe_tf = var_kron_gen_time_generic!(model, active_gen, "Pe_tf",  time_window)
-    δCOI_tf = var_kron_COI_time_generic!(model, "δCOI_tf",  time_window)
 
     dyn_model_dict[:vars][:δ_tf]    = δ_tf
     dyn_model_dict[:vars][:Δω_tf]   = Δω_tf
     dyn_model_dict[:vars][:Pe_tf]   = Pe_tf
-    dyn_model_dict[:vars][:δCOI_tf] = δCOI_tf 
 
-    dyn_model_dict[:eq_const][:eq_const_δCOI_tf] = eq_const_kron_COI_generic!(model, δ_tf, δCOI_tf, active_gen, DGEN_DYN, time_window)
+    δCOI_tf = _attach_δCOI!(model, dyn_model_dict, δ_tf, active_gen, DGEN_DYN,
+        time_window, :tf)
     dyn_model_dict[:eq_const][:eq_const_Pe_tf] = eq_const_tsredlinear_Pe_taylor!(model, Pe_tf, δ_tf, active_gen, time_window, Yred, δ_ref)
     dyn_model_dict[:eq_const][:eq_const_δ_tf]    = eq_const_kron_δ_swingeq_generic!(model, active_gen, δ_tf, Δω_tf, δ_0, Δω_0, time_window, ω_syn, Δt)
     dyn_model_dict[:eq_const][:eq_const_Δω_tf]   = eq_const_tsredlinear_Δω_swingeq_generic_modified!(model, active_gen, DGEN_DYN, P_mech, Pe_tf, Δω_tf, Δω_0, time_window, Δt)
 
     attach_fault_tf_var_bounds!(model, dyn_model_dict)
 
-    # δ-COI stability bounds (flavour set by `bound_style`).
-    _add_δ_COI_bounds_fault!(
+    # δ-COI stability bounds (flavour set by `bound_style_δ`).
+    _add_δ_bounds_fault!(
         model, dyn_model_dict, active_gen, DGEN_DYN, P_mech, δ_tf, δCOI_tf,
         Δω_tf, Pe_tf, time_window, δ_tol, δ_0, Δω_0, ω_syn, Δt)
 
-    if get(dyn_model_dict[:meta], :constrain_Δω_COI, false)
-        Δω_tol = dyn_model_dict[:meta][:Δω_tol]
-        ΔωCOI_tf = var_kron_COI_time_generic!(model, "ΔωCOI_tf", time_window)
-        dyn_model_dict[:vars][:ΔωCOI_tf] = ΔωCOI_tf
-        dyn_model_dict[:eq_const][:eq_const_ΔωCOI_tf] = eq_const_kron_COI_generic!(
-            model, Δω_tf, ΔωCOI_tf, active_gen, DGEN_DYN, time_window)
-        dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tf_lower],
-        dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tf_upper] = ineq_const_kron_Δω_COI_generic!(
-            model, active_gen, Δω_tf, ΔωCOI_tf, time_window, Δω_tol)
-    end
+    # Optional speed corridor (reference set by `bound_style_Δω`).
+    _add_Δω_bounds!(model, dyn_model_dict, :tf, active_gen, DGEN_DYN, Δω_tf, time_window)
 
     return model, dyn_model_dict
 
@@ -403,34 +400,24 @@ function Define_PostFault_Dynamic_Model_tsredlinear!(model::JuMP.Model,
     δ_tpf  = var_kron_gen_time_generic!(model, active_gen, "δ_tpf",  time_window)
     Δω_tpf = var_kron_gen_time_generic!(model, active_gen, "Δω_tpf", time_window)
     Pe_tpf = var_kron_gen_time_generic!(model, active_gen, "Pe_tpf",  time_window)
-    δCOI_tpf = var_kron_COI_time_generic!(model, "δCOI_tpf",  time_window)
 
     dyn_model_dict[:vars][:δ_tpf]    = δ_tpf
     dyn_model_dict[:vars][:Δω_tpf]   = Δω_tpf
     dyn_model_dict[:vars][:Pe_tpf]   = Pe_tpf
-    dyn_model_dict[:vars][:δCOI_tpf] = δCOI_tpf 
 
-    dyn_model_dict[:eq_const][:eq_const_δCOI_tpf] = eq_const_kron_COI_generic!(model, δ_tpf, δCOI_tpf, active_gen, DGEN_DYN, time_window)
+    δCOI_tpf = _attach_δCOI!(model, dyn_model_dict, δ_tpf, active_gen, DGEN_DYN,
+        time_window, :tpf)
     dyn_model_dict[:eq_const][:eq_const_Pe_tpf] = eq_const_tsredlinear_Pe_taylor!(model, Pe_tpf, δ_tpf, active_gen, time_window, Yred, δ_ref)
     dyn_model_dict[:eq_const][:eq_const_δ_tpf]    = eq_const_kron_δ_swingeq_generic!(model, active_gen, δ_tpf, Δω_tpf, δ_ant, Δω_ant, time_window, ω_syn, Δt)
     dyn_model_dict[:eq_const][:eq_const_Δω_tpf]   = eq_const_tsredlinear_Δω_swingeq_generic_modified!(model, active_gen, DGEN_DYN, Pe_ant, P_mech, Pe_tpf, Δω_tpf, Δω_ant, time_window, Δt)
 
     attach_postfault_tpf_var_bounds!(model, dyn_model_dict)
 
-    _add_δ_COI_bounds_postf!(
+    _add_δ_bounds_postf!(
         model, dyn_model_dict, active_gen, DGEN_DYN, P_mech, δ_tpf, δCOI_tpf,
         Δω_tpf, Pe_tpf, time_window, δ_tol, δ_ant, Δω_ant, Pe_ant, ω_syn, Δt)
 
-    if get(dyn_model_dict[:meta], :constrain_Δω_COI, false)
-        Δω_tol = dyn_model_dict[:meta][:Δω_tol]
-        ΔωCOI_tpf = var_kron_COI_time_generic!(model, "ΔωCOI_tpf", time_window)
-        dyn_model_dict[:vars][:ΔωCOI_tpf] = ΔωCOI_tpf
-        dyn_model_dict[:eq_const][:eq_const_ΔωCOI_tpf] = eq_const_kron_COI_generic!(
-            model, Δω_tpf, ΔωCOI_tpf, active_gen, DGEN_DYN, time_window)
-        dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tpf_lower],
-        dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tpf_upper] = ineq_const_kron_Δω_COI_generic!(
-            model, active_gen, Δω_tpf, ΔωCOI_tpf, time_window, Δω_tol)
-    end
+    _add_Δω_bounds!(model, dyn_model_dict, :tpf, active_gen, DGEN_DYN, Δω_tpf, time_window)
 
     return model, dyn_model_dict
 

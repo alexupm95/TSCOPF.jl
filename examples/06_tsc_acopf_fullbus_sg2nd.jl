@@ -21,7 +21,7 @@
       solver_log.txt. It is mandatory and unconditional — a flat start on FULL_BUS
       rarely converges — and `run_case!` throws if it does not reach optimality.
     • `mech_power_mode = USE_PM` is required (validated before any solve), which in
-      turn forces `bound_style = :coi_box`.
+      turn forces `bound_style_δ = :coi_box`.
     • Unlike the Kron avenue, `ode_first_step = :backward_euler` is honoured here:
       the first row of each window switches from the trapezoidal average to plain
       backward Euler, which is what the reference implementation does.
@@ -163,7 +163,7 @@ const fault_cfg = FaultConfig(
 const dyn_model_cfg = DynModelConfig(
     gen_order               = CLASSICAL_2ND,    # constant EMF behind X'd, two states (δ, Δω)
     network_form            = FULL_BUS,         # keep every bus: sparse Ybus + nodal KCL, load buses included
-    mech_power_mode         = USE_PM,           # required by the FULL_BUS builder; also forces bound_style = :coi_box
+    mech_power_mode         = USE_PM,           # required by the FULL_BUS builder; also forces bound_style_δ = :coi_box
     dq_speed_dev_in_algebra = true,             # (1+Δω) in the stator algebra; DQ_4TH only, so inert here
     include_avr             = false,            # false is MANDATORY on CLASSICAL_2ND — the AVR requires DQ_4TH
     include_governor        = false,            # legal to set true here; see example 07
@@ -176,9 +176,9 @@ const dyn_model_cfg = DynModelConfig(
     # vector (P, I, Z), so its [0,0,1] is our (1.0, 0.0, 0.0).
     zip_load_p              = (1.0, 0.0, 0.0),  # active demand: 100 % constant impedance (∝ V²), 0 % current, 0 % power
     zip_load_q              = (1.0, 0.0, 0.0),  # reactive demand: same split, set independently of the active one
-    bound_style             = :coi_box,         # forced by USE_PM: the stability limit is a direct corridor around the COI
-    constrain_Δω_COI        = false,            # false = no corridor on Δω_i − Δω_COI; true builds the frequency box
-    Δω_tol_pu               = 0.5,              # half-width of that Δω corridor [pu]; read only when constrain_Δω_COI = true
+    bound_style_δ             = :coi_box,         # forced by USE_PM: the stability limit is a direct corridor around the COI
+    constrain_Δω        = false,            # false = no corridor on Δω_i − Δω_COI; true builds the frequency box
+    Δω_tol_pu               = 0.5,              # half-width of that Δω corridor [pu]; read only when constrain_Δω = true
     Δω_tol_pu_lower         = nothing,          # nothing = reuse Δω_tol_pu below the COI
     Δω_tol_pu_upper         = nothing,          # nothing = reuse Δω_tol_pu above the COI
     fault                   = fault_cfg,        # the FaultConfig instance built above

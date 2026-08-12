@@ -31,8 +31,14 @@ end
 function main_style_tsc_base(;
     network_form::NetworkForm,
     mech_power_mode::MechPowerMode,
-    bound_style::Symbol,
+    bound_style_δ::Symbol,
     builder::TsBuilderConfig=main_style_ts_builder(),
+    constrain_δ::Bool=true,
+    δ_ref_gen_id::Union{Nothing, Int}=nothing,
+    constrain_Δω::Bool=false,
+    bound_style_Δω::Symbol=:coi_box,
+    Δω_tol_pu::Float64=0.5,
+    fault::FaultConfig=FaultConfig(fault_type = SC, contingency_id = 2),
     kwargs...
 )
     return RunConfig(;
@@ -67,11 +73,15 @@ function main_style_tsc_base(;
             dyn_model = DynModelConfig(
                 network_form = network_form,
                 mech_power_mode = mech_power_mode,
-                bound_style = bound_style,
+                constrain_δ = constrain_δ,
+                bound_style_δ = bound_style_δ,
+                δ_ref_gen_id = δ_ref_gen_id,
                 zip_load_p = (1.0, 0.0, 0.0),
                 zip_load_q = (1.0, 0.0, 0.0),
-                constrain_Δω_COI = false,
-                fault = FaultConfig(fault_type = SC, contingency_id = 2),
+                constrain_Δω = constrain_Δω,
+                bound_style_Δω = bound_style_Δω,
+                Δω_tol_pu = Δω_tol_pu,
+                fault = fault,
             ),
         ),
         kwargs...,
@@ -82,7 +92,7 @@ function main_style_tsc_kron_config(; kwargs...)
     return main_style_tsc_base(;
         network_form = KRON_REDUCED,
         mech_power_mode = USE_PM,
-        bound_style = :coi_box,
+        bound_style_δ = :coi_box,
         kwargs...,
     )
 end
@@ -91,7 +101,7 @@ function main_style_tsc_fullbus_config(; kwargs...)
     return main_style_tsc_base(;
         network_form = FULL_BUS,
         mech_power_mode = USE_PM,
-        bound_style = :coi_box,
+        bound_style_δ = :coi_box,
         kwargs...,
     )
 end

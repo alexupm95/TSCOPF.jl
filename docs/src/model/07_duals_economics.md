@@ -81,10 +81,12 @@ When `trans_stab = true` and `save_duals = true`, TSCOPF exports JuMP duals from
 | COI definition | `dual_δCOI` | [Model 6.6](06_tsc_opf_assembled.md) | Gauge on the inertia-weighted reference angle |
 | Swing discretisation | `dual_δ`, `dual_Δω` | [Models 6.3–6.4](06_tsc_opf_assembled.md) | Shadow on integrating the swing one more step |
 | Electrical power | `dual_Pe` | [Model 6.5](06_tsc_opf_assembled.md) | Network torque on the rotor at $(g,t)$ |
-| **Stability corridor** | `dual_δ_COI_upper`, `dual_δ_COI_lower` | [Model 6.7](06_tsc_opf_assembled.md) | **Stability scarcity**: margin on rotor angle w.r.t. COI |
-| Speed COI box (optional) | `dual_Δω_COI_upper`, `dual_Δω_COI_lower` | `constrain_Δω_COI` | Frequency-coherence scarcity |
+| **Stability corridor (COI)** | `dual_δ_COI_upper`, `dual_δ_COI_lower` | [Model 6.7](06_tsc_opf_assembled.md) | **Stability scarcity**: margin on rotor angle w.r.t. COI |
+| **Stability corridor (reference machine)** | `dual_δ_ref_upper`, `dual_δ_ref_lower` | `bound_style_δ ∈ (:highest_H, :ref_gen)` | Same scarcity, priced against one live machine instead of the COI |
+| Speed COI box (optional) | `dual_Δω_COI_upper`, `dual_Δω_COI_lower` | `constrain_Δω` with `:coi_box` | Frequency-coherence scarcity: spread between machines |
+| Absolute speed box (optional) | `dual_Δω_abs_upper`, `dual_Δω_abs_lower` | `constrain_Δω` with `:abs` | Also prices the fleet's common-mode frequency excursion |
 
-When the upper $\delta$ bound binds for generator $g$ at time $t$, `dual_δ_COI_upper` is the incremental cost (in the Lagrangian sense) of tightening the corridor by one unit. That is the object you would trace when asking how stability constraints re-shape effective prices, not the nodal $\lambda_k$ from dispatch alone.
+When the upper $\delta$ bound binds for generator $g$ at time $t$, `dual_δ_COI_upper` is the incremental cost (in the Lagrangian sense) of tightening the corridor by one unit. The reference-machine family `dual_δ_ref_upper` answers the same question against a different yardstick, so the two are not interchangeable and never appear in the same run: the COI is an inertia-weighted average that moves with the whole fleet, while a reference machine is one physical unit whose own swing enters every row. Comparing the two price surfaces over the same contingency is the point of running both. That is the object you would trace when asking how stability constraints re-shape effective prices, not the nodal $\lambda_k$ from dispatch alone.
 
 ---
 
@@ -121,6 +123,10 @@ Authoritative source: `src/_transient_stability/DynDualRegistry.jl`, which holds
 | `Delta_Omega_Duals` | `dual_Δω` | `dual_Delta_Omega.csv` |
 | `delta_COI_Lower_Duals` | `dual_δ_COI_lower` | `dual_delta_COI_lower.csv` |
 | `delta_COI_Upper_Duals` | `dual_δ_COI_upper` | `dual_delta_COI_upper.csv` |
+| `δ_ref_lower_Duals` | `dual_δ_ref_lower` | `dual_delta_ref_lower.csv` |
+| `δ_ref_upper_Duals` | `dual_δ_ref_upper` | `dual_delta_ref_upper.csv` |
+| — | `dual_Δω_abs_lower` | `dual_Delta_Omega_abs_lower.csv` |
+| — | `dual_Δω_abs_upper` | `dual_Delta_Omega_abs_upper.csv` |
 
 Governor and AVR paths add `dual_Pref_init`, `dual_gov_valve`, `dual_gov_mech`, `dual_gov_valve_sat` (or `dual_LB_gov_valve` / `dual_UB_gov_valve`, depending on `governor_limiter`), `dual_Vref_init`, `dual_avr_E_fd`, etc., when those constraints are built. What each of those multipliers prices is in [8. Machine controls](08_controls_avr_governor.md); the file-by-file output inventory is in [Dynamic controls (AVR / governor)](../dynamic_controls_avr_governor.md).
 

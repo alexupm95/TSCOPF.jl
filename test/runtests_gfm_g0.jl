@@ -40,7 +40,7 @@ include(joinpath(@__DIR__, "tsc_main_style_config.jl"))
                 gen_order = DQ_4TH,
                 network_form = FULL_BUS,
                 mech_power_mode = USE_PM,
-                bound_style = :coi_box,
+                bound_style_δ = :coi_box,
             ),
         ),
     )
@@ -336,7 +336,7 @@ include(joinpath(@__DIR__, "tsc_main_style_config.jl"))
     @test DynModelConfig().gfm_integrator === :backward_euler
     gm = TSCOPF.dynamic_gen_model(
         DynModelConfig(gen_order = DQ_4TH, network_form = FULL_BUS,
-            mech_power_mode = USE_PM, bound_style = :coi_box,
+            mech_power_mode = USE_PM, bound_style_δ = :coi_box,
             gfm_integrator = :backward_euler); linearize = false)
     @test gm.gfm_integrator === :backward_euler
 

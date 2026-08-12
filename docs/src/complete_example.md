@@ -166,8 +166,8 @@ const dyn_model_cfg = DynModelConfig(
     gfm_integrator          = :backward_euler, # GFM filters + Q–V PI only
     zip_load_p              = (1.0, 0.0, 0.0), # ACTIVE demand (Z, I, P), sums to 1
     zip_load_q              = (1.0, 0.0, 0.0), # REACTIVE demand (Z, I, P), sums to 1
-    bound_style             = :coi_box,        # :coi_box | :swing_propagated
-    constrain_Δω_COI        = false,           # optional speed corridor around COI
+    bound_style_δ             = :coi_box,        # :coi_box | :swing_propagated | :highest_H | :ref_gen
+    constrain_Δω              = false,           # optional speed corridor (bound_style_Δω)
     Δω_tol_pu               = 0.5,             # symmetric half-width [p.u.]
     Δω_tol_pu_lower         = nothing,         # positive magnitude below COI
     Δω_tol_pu_upper         = nothing,         # positive magnitude above COI
@@ -410,7 +410,7 @@ The pre-fault init equalities that link the OPF point to the initial dynamic sta
 | `network_form` | `NetworkForm` | `KRON_REDUCED` | `KRON_REDUCED` or `FULL_BUS` |
 | `mech_power_mode` | `MechPowerMode` | `USE_PG` | `USE_PG` puts the dispatch $P_g$ in the swing; `USE_PM` introduces an explicit $P_m$ |
 | `dq_speed_dev_in_algebra` | `Bool` | `true` | Keeps the $(1+\Delta\omega)$ factor in the stator and $P_e$ algebra (RMS convention). `false` neglects it |
-| `include_avr` | `Bool` | `false` | Chapter 8. Requires `DQ_4TH` and `T_exc`, `K_exc` columns |
+| `include_avr` | `Bool` | `false` | Chapter 8. Requires `DQ_4TH` and `T_exc`, `K_exc`, `Ta_exc`, `Tb_exc` columns |
 | `include_governor` | `Bool` | `false` | Chapter 8. Requires `USE_PM`, `FULL_BUS`, and `R`, `T1`, `T2`, `T3` columns |
 | `governor_limiter` | `GovernorLimiter` | `GOV_NO_LIMIT` | `GOV_NO_LIMIT`, `GOV_SMOOTH`, `GOV_HARD_BOUND`. Only read when the governor is on |
 | `allow_gfm` | `Bool` | `false` | Chapter 9. Requires `DQ_4TH` + `FULL_BUS`, and at least one active SG must remain |
@@ -418,8 +418,8 @@ The pre-fault init equalities that link the OPF point to the initial dynamic sta
 | `gfm_integrator` | `Symbol` | `:backward_euler` | GFM measurement filters and Q–V PI **only**. `:backward_euler` is BE at every step (the reference implementation, and the default — the trapezoidal variants cost ~70× solve time on a 3 s horizon); `:follow_ode_first_step` applies the `ode_first_step` rule above; `:trapezoidal` is trapezoidal at every step. Trapezoidal rings once `t_step > 2·Tf` |
 | `zip_load_p` | `NTuple{3,Float64}` | `(1.0, 0.0, 0.0)` | **Active** demand split `(Z, I, P)`; must sum to 1 |
 | `zip_load_q` | `NTuple{3,Float64}` | `(1.0, 0.0, 0.0)` | **Reactive** demand split `(Z, I, P)`; independent of `zip_load_p`; must sum to 1 |
-| `bound_style` | `Symbol` | `:swing_propagated` | `:coi_box` writes the corridor directly on $\delta - \delta^{\mathrm{COI}}$; `:swing_propagated` substitutes the trapezoidal update first |
-| `constrain_Δω_COI` | `Bool` | `false` | Adds the speed corridor around the COI speed |
+| `bound_style_δ` | `Symbol` | `:swing_propagated` | `:coi_box` writes the corridor directly on $\delta - \delta^{\mathrm{COI}}$; `:swing_propagated` substitutes the trapezoidal update first; `:highest_H` / `:ref_gen` reference one live machine instead of the COI |
+| `constrain_Δω` | `Bool` | `false` | Adds the speed corridor; `bound_style_Δω` picks the COI or the raw Δω |
 | `Δω_tol_pu` | `Float64` | `0.5` | Symmetric half-width, p.u. Must be positive when the corridor is on |
 | `Δω_tol_pu_lower` | `Float64` or `nothing` | `nothing` | Positive magnitude below COI |
 | `Δω_tol_pu_upper` | `Float64` or `nothing` | `nothing` | Positive magnitude above COI |
@@ -502,18 +502,21 @@ Each of these raises an `ArgumentError` before any variable is created. The chec
 | A ZIP tuple not summing to 1 | `validate_dyn_config!` | `zip_load_p (Z, I, P) coefficients must sum to 1 …` |
 | `DQ_4TH` with `KRON_REDUCED` | `validate_dyn_config!` | `DQ_4TH requires FULL_BUS network_form …` |
 | `DQ_4TH` without `USE_PM` | `validate_dyn_config!` | `DQ_4TH requires mech_power_mode=USE_PM.` |
-| `DQ_4TH` without `:coi_box` | `validate_dyn_config!` | `DQ_4TH requires bound_style=:coi_box.` |
+| `DQ_4TH` with `:swing_propagated` | `validate_dyn_config!` | `DQ_4TH requires a box-form bound_style_δ (:coi_box), not :swing_propagated.` |
 | `include_avr` without `DQ_4TH` | `validate_dyn_config!` | `include_avr=true requires gen_order=DQ_4TH.` |
 | `include_governor` without `USE_PM` | `validate_dyn_config!` | `include_governor=true requires mech_power_mode=USE_PM …` |
 | `include_governor` on `KRON_REDUCED` | `validate_dyn_config!` | `include_governor=true is currently supported only on network_form=FULL_BUS …` |
-| `USE_PM` with `:swing_propagated` | `validate_dyn_config!` | `USE_PM requires bound_style=:coi_box …` |
-| `bound_style` outside the two symbols | `validate_dyn_config!` | `bound_style must be :swing_propagated or :coi_box.` |
+| `USE_PM` with `:swing_propagated` | `validate_dyn_config!` | `USE_PM requires a box-form bound_style_δ (:coi_box) …` |
+| `bound_style_δ` outside the four symbols | `validate_dyn_config!` | `bound_style_δ must be :swing_propagated, :coi_box, :highest_H or :ref_gen …` |
+| `:ref_gen` without an id | `validate_dyn_config!` | `bound_style_δ=:ref_gen requires δ_ref_gen_id …` |
+| `:ref_gen` id that is tripped or out of service (a GFM id is legal) | `validate_δ_reference!` | `δ_ref_gen_id=… is tripped by the GL disturbance …` |
+| Neither corridor enabled | `validate_dyn_config!` | `A transient-stability run needs at least one corridor …` |
 | `ode_first_step` outside the two symbols | `validate_dyn_config!` | `ode_first_step must be :trapezoidal or :backward_euler …` |
 | `gfm_integrator` outside the three symbols | `validate_dyn_config!` | `gfm_integrator must be :follow_ode_first_step, :backward_euler or :trapezoidal …` |
 | TSC-DCOPF with `FULL_BUS` | `validate_dyn_config!` | `TSC-DCOPF with FULL_BUS is not implemented yet …` |
 | TSC-DCOPF with `DQ_4TH` | `validate_dyn_config!` | `TSC-DCOPF with DQ_4TH is not implemented …` |
 | `allow_gfm` outside `DQ_4TH` + `FULL_BUS`, or under DCOPF | `validate_dyn_config!` | `allow_gfm=true requires network_form=FULL_BUS.` |
-| `constrain_Δω_COI` with a non-positive tolerance | `validate_dyn_config!` | `constrain_Δω_COI=true requires Δω_tol_pu > 0.` |
+| `constrain_Δω` with a non-positive tolerance | `validate_dyn_config!` | `constrain_Δω=true requires Δω_tol_pu > 0.` |
 | Non-positive `δ_tol_deg` or `t_step` | `validate_transient_config!` | `δ_tol_deg must be positive.` |
 | Any limit pair with `min ≥ max`, or a `*_source` other than `:dgen_pg_limits` | `validate_ts_bound_limits!` | `require E_min_pu < E_max_pu.` |
 | SC with a non-empty `ob_branch_ids`, GL specifying both gens and loads, OB with an empty list, an OB set that islands the network, tripping the slack | `validate_fault_config!` | `OB open of branches […] would island the network …` |

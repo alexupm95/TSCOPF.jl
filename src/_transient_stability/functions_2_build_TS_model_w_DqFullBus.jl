@@ -18,7 +18,7 @@
 Append the FULL_BUS dq transient-stability sub-model onto an existing ACOPF `model`.
 
 See `Make_Dynamic_Model_fullbus!` for the SC/GL window layout. DQ-specific requirements:
-`mech_power_mode=USE_PM`, `bound_style=:coi_box`, and full machine columns in
+`mech_power_mode=USE_PM`, `bound_style_δ=:coi_box`, and full machine columns in
 `gen_dynamic_data` (use `gen_dynamic_data_full.csv`).
 """
 function Make_Dynamic_Model_dqfullbus!(
@@ -38,8 +38,11 @@ function Make_Dynamic_Model_dqfullbus!(
     simulation::TsSimulationConfig=TsSimulationConfig(),
     ts_builder::TsBuilderConfig=TsBuilderConfig(),
     mech_power_mode::MechPowerMode=USE_PM,
-    bound_style::Symbol=:coi_box,
-    constrain_Δω_COI::Bool=false,
+    constrain_δ::Bool=true,
+    bound_style_δ::Symbol=:coi_box,
+    δ_ref_gen_id::Union{Nothing, Int}=nothing,
+    constrain_Δω::Bool=false,
+    bound_style_Δω::Symbol=:coi_box,
     Δω_tol::Tuple{Float64, Float64}=(-0.5, 0.5),
     zip_load_p::NTuple{3, Float64}=(1.0, 0.0, 0.0),
     zip_load_q::NTuple{3, Float64}=(1.0, 0.0, 0.0),
@@ -76,8 +79,11 @@ function Make_Dynamic_Model_dqfullbus!(
     dyn_model_dict[:ineq_const] = OrderedDict{Symbol, Any}()
     dyn_model_dict[:meta] = OrderedDict{Symbol, Any}(
         :mech_power_mode => mech_power_mode,
-        :bound_style => bound_style,
-        :constrain_Δω_COI => constrain_Δω_COI,
+        :constrain_δ => constrain_δ,
+        :bound_style_δ => bound_style_δ,
+        :δ_ref_gen_id => δ_ref_gen_id,
+        :constrain_Δω => constrain_Δω,
+        :bound_style_Δω => bound_style_Δω,
         :Δω_tol => Δω_tol,
         :network_form => "FULL_BUS",
         :gen_order => "DQ_4TH",
@@ -281,9 +287,9 @@ function Make_Dynamic_Model_dqfullbus!(
     dyn_model_dict[:mech_power_mode] = mech_power_mode
     dyn_parameters_dict[:common] = OrderedDict{Symbol, Any}(
         :δ_tol => δ_tol, :f_syn => f_syn, :ω_syn => ω_syn, :Δω_0 => Δω_0,
-        :constrain_Δω_COI => constrain_Δω_COI,
+        :constrain_Δω => constrain_Δω,
     )
-    if constrain_Δω_COI
+    if constrain_Δω
         dyn_parameters_dict[:common][:Δω_tol] = Δω_tol
     end
 
@@ -482,26 +488,18 @@ function Define_Fault_Dynamic_Model_dq!(
     dyn_model_dict[:vars][:Iq_tf] = Iq_tf
     dyn_model_dict[:vars][:Te_tf] = Te_tf
 
-    δCOI_tf = var_kron_COI_time_generic!(model, "δCOI_tf", time_window)
-    dyn_model_dict[:vars][:δCOI_tf] = δCOI_tf
-    dyn_model_dict[:eq_const][:eq_const_δCOI_tf] = eq_const_kron_COI_generic!(
-        model, δ_tf, δCOI_tf, sg_gens, DGEN_DYN, time_window)
+    # The corridors receive the full active set and narrow it themselves: the
+    # machine-referenced δ styles and the absolute Δω style span the converters too, while
+    # every inertia-weighted quantity is rebuilt over the SGs alone (`_sg_ids`).
+    δCOI_tf = _attach_δCOI!(model, dyn_model_dict, δ_tf, active_gen, DGEN_DYN,
+        time_window, :tf)
     attach_fault_tf_var_bounds!(model, dyn_model_dict)
-    _add_δ_COI_bounds_fault!(
-        model, dyn_model_dict, sg_gens, DGEN_DYN, P_mech, δ_tf, δCOI_tf,
+    _add_δ_bounds_fault!(
+        model, dyn_model_dict, active_gen, DGEN_DYN, P_mech, δ_tf, δCOI_tf,
         Δω_tf, Pe_tf, time_window, δ_tol, δ_0, Δω_0, ω_syn, Δt)
 
-    if get(dyn_model_dict[:meta], :constrain_Δω_COI, false)
-        Δω_tol = dyn_model_dict[:meta][:Δω_tol]
-        ΔωCOI_tf = var_kron_COI_time_generic!(model, "ΔωCOI_tf", time_window)
-        dyn_model_dict[:vars][:ΔωCOI_tf] = ΔωCOI_tf
-        dyn_model_dict[:eq_const][:eq_const_ΔωCOI_tf] = eq_const_kron_COI_generic!(
-            model, Δω_tf, ΔωCOI_tf, sg_gens, DGEN_DYN, time_window)
-        dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tf_lower],
-        dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tf_upper] =
-            ineq_const_kron_Δω_COI_generic!(
-                model, sg_gens, Δω_tf, ΔωCOI_tf, time_window, Δω_tol)
-    end
+    # Optional speed corridor (reference set by `bound_style_Δω`).
+    _add_Δω_bounds!(model, dyn_model_dict, :tf, active_gen, DGEN_DYN, Δω_tf, time_window)
 
     alg_tf = eq_const_dq_machine_algebra!(
         model, sg_gens, DGEN, DGEN_DYN, Pe_tf, Qe_tf, δ_tf, Δω_tf,
@@ -649,26 +647,15 @@ function Define_PostFault_Dynamic_Model_dq!(
     dyn_model_dict[:vars][:Iq_tpf] = Iq_tpf
     dyn_model_dict[:vars][:Te_tpf] = Te_tpf
 
-    δCOI_tpf = var_kron_COI_time_generic!(model, "δCOI_tpf", time_window)
-    dyn_model_dict[:vars][:δCOI_tpf] = δCOI_tpf
-    dyn_model_dict[:eq_const][:eq_const_δCOI_tpf] = eq_const_kron_COI_generic!(
-        model, δ_tpf, δCOI_tpf, sg_gens, DGEN_DYN, time_window)
+    # As in the fault window: full active set in, narrowing decided by the corridor style.
+    δCOI_tpf = _attach_δCOI!(model, dyn_model_dict, δ_tpf, active_gen, DGEN_DYN,
+        time_window, :tpf)
     attach_postfault_tpf_var_bounds!(model, dyn_model_dict)
-    _add_δ_COI_bounds_postf!(
-        model, dyn_model_dict, sg_gens, DGEN_DYN, P_mech, δ_tpf, δCOI_tpf,
+    _add_δ_bounds_postf!(
+        model, dyn_model_dict, active_gen, DGEN_DYN, P_mech, δ_tpf, δCOI_tpf,
         Δω_tpf, Pe_tpf, time_window, δ_tol, δ_ant, Δω_ant, Pe_ant, ω_syn, Δt)
 
-    if get(dyn_model_dict[:meta], :constrain_Δω_COI, false)
-        Δω_tol = dyn_model_dict[:meta][:Δω_tol]
-        ΔωCOI_tpf = var_kron_COI_time_generic!(model, "ΔωCOI_tpf", time_window)
-        dyn_model_dict[:vars][:ΔωCOI_tpf] = ΔωCOI_tpf
-        dyn_model_dict[:eq_const][:eq_const_ΔωCOI_tpf] = eq_const_kron_COI_generic!(
-            model, Δω_tpf, ΔωCOI_tpf, sg_gens, DGEN_DYN, time_window)
-        dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tpf_lower],
-        dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tpf_upper] =
-            ineq_const_kron_Δω_COI_generic!(
-                model, sg_gens, Δω_tpf, ΔωCOI_tpf, time_window, Δω_tol)
-    end
+    _add_Δω_bounds!(model, dyn_model_dict, :tpf, active_gen, DGEN_DYN, Δω_tpf, time_window)
 
     alg_tpf = eq_const_dq_machine_algebra!(
         model, sg_gens, DGEN, DGEN_DYN, Pe_tpf, Qe_tpf, δ_tpf, Δω_tpf,

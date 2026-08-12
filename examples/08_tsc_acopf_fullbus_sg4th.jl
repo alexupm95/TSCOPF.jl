@@ -21,7 +21,7 @@
   Requirements enforced at validation (engine.jl:209-224):
       gen_order = DQ_4TH  ⇒  network_form    = FULL_BUS
                           ⇒  mech_power_mode = USE_PM
-                          ⇒  bound_style     = :coi_box
+                          ⇒  bound_style_δ     = :coi_box
   and the dynamic CSV must carry the full machine header — Xd_tr, Xq_tr, Xd, Xq,
   Td, Tq, H, D, Ra — hence `gen_dynamic_data_full.csv`.
 
@@ -210,9 +210,9 @@ const dyn_model_cfg = DynModelConfig(
     # loads and a solve that runs into the iteration limit.
     zip_load_p              = (1.0, 0.0, 0.0),  # active demand: 100 % constant impedance (∝ V²), 0 % current, 0 % power
     zip_load_q              = (1.0, 0.0, 0.0),  # reactive demand: same split, set independently of the active one
-    bound_style             = :coi_box,         # required by DQ_4TH: the stability limit is a direct corridor around the COI
-    constrain_Δω_COI        = false,            # false = no corridor on Δω_i − Δω_COI; true builds the frequency box
-    Δω_tol_pu               = 0.5,              # half-width of that Δω corridor [pu]; read only when constrain_Δω_COI = true
+    bound_style_δ             = :coi_box,         # required by DQ_4TH: the stability limit is a direct corridor around the COI
+    constrain_Δω        = false,            # false = no corridor on Δω_i − Δω_COI; true builds the frequency box
+    Δω_tol_pu               = 0.5,              # half-width of that Δω corridor [pu]; read only when constrain_Δω = true
     Δω_tol_pu_lower         = nothing,          # nothing = reuse Δω_tol_pu below the COI
     Δω_tol_pu_upper         = nothing,          # nothing = reuse Δω_tol_pu above the COI
     fault                   = fault_cfg,        # the FaultConfig instance built above

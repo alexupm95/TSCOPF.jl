@@ -426,7 +426,7 @@ Nested in `RunConfig.transient.dyn_model`. Defined in `_transient_stability/DynM
 | `network_form` | `KRON_REDUCED`, `FULL_BUS` | `KRON_REDUCED` | Kron vs full-network nodal |
 | `mech_power_mode` | `USE_PG`, `USE_PM` | `USE_PG` | Swing uses `P_g` or explicit `P_m` |
 | `include_governor` | `Bool` | `false` | TGOV1 turbine governor → time-varying `P_mech(t)`; **FULL_BUS + USE_PM only** |
-| `include_avr` | `Bool` | `false` | First-order AVR → time-varying `E_fd(t)`; **DQ_4TH + FULL_BUS + USE_PM only** |
+| `include_avr` | `Bool` | `false` | SEXS AVR → time-varying `E_fd(t)`; **DQ_4TH + FULL_BUS + USE_PM only** |
 | `governor_limiter` | `GOV_NO_LIMIT`, `GOV_SMOOTH`, `GOV_HARD_BOUND` | `GOV_NO_LIMIT` | Valve saturation treatment (only read when `include_governor`) |
 | `allow_gfm` | `Bool` | `false` | Mixed fleet with separate `gfm_dynamic_data.csv`; **requires `DQ_4TH` + `FULL_BUS`** (Phase G2: init + ACOPF limits + transient filters/droop/PI/limiter) |
 | `dq_speed_dev_in_algebra` | `Bool` | `true` | **DQ_4TH only:** include `(1+Δω)` in `Pe` and stator `Vd`/`Vq` algebra (RMS-style); `false` neglects speed in those equations |
@@ -436,10 +436,10 @@ Nested in `RunConfig.transient.dyn_model`. Defined in `_transient_stability/DynM
 | Scenario | Suggested settings |
 |---|---|
 | Classic TSC-ACOPF (Kron) | defaults: `KRON_REDUCED`, `USE_PG`, `:swing_propagated` |
-| FULL_BUS TSC-ACOPF | `network_form=FULL_BUS`, `mech_power_mode=USE_PM`, `bound_style=:coi_box` |
+| FULL_BUS TSC-ACOPF | `network_form=FULL_BUS`, `mech_power_mode=USE_PM`, `bound_style_δ=:coi_box` |
 | FULL_BUS + turbine governor | above **plus** `include_governor=true`, `gen_dynamic_filename="gen_dynamic_data_full.csv"` (needs `R,T1,T2,T3`) |
-| DQ_4TH FULL_BUS TSC-ACOPF | `gen_order=DQ_4TH`, `FULL_BUS`, `USE_PM`, `bound_style=:coi_box`, `gen_dynamic_filename="gen_dynamic_data_full.csv"` (needs `Xq_tr,Xd,Xq,Td,Tq,Ra`); optional `dq_speed_dev_in_algebra=false` |
-| DQ_4TH + AVR | DQ preset **plus** `include_avr=true` (needs `T_exc,K_exc` in full CSV) |
+| DQ_4TH FULL_BUS TSC-ACOPF | `gen_order=DQ_4TH`, `FULL_BUS`, `USE_PM`, `bound_style_δ=:coi_box`, `gen_dynamic_filename="gen_dynamic_data_full.csv"` (needs `Xq_tr,Xd,Xq,Td,Tq,Ra`); optional `dq_speed_dev_in_algebra=false` |
+| DQ_4TH + AVR | DQ preset **plus** `include_avr=true` (needs `T_exc,K_exc,Ta_exc,Tb_exc` in full CSV; `Ta_exc=Tb_exc=0` bypasses the lead-lag) |
 | DQ_4TH + governor | DQ preset **plus** `include_governor=true` (needs `R,T1,T2,T3` in full CSV) |
 | DQ_4TH + AVR + governor | Both flags true (reference-style full control stack) |
 | Mixed SG + GFM (Phase G2) | DQ preset **plus** `allow_gfm=true`, case `9bus_gfm`, split dyn CSVs (see §3.3) |
@@ -481,18 +481,44 @@ same column names as the `CONSTRAINT` ≤-rows.
 
 Block diagram and equations: [`docs/dynamic_controls_avr_governor.md`](dynamic_controls_avr_governor.md) (governor section).
 
-#### AVR (first-order exciter) — DQ_4TH only
+#### AVR (SEXS exciter) — DQ_4TH only
 
-When `include_avr=true`, field voltage `E_fd` becomes a time-varying state driven by terminal
-voltage feedback (`T_exc·d(E_fd_unlim)/dt = K_exc·(V_ref − V_terminal) − E_fd_unlim`, i.e. the
-first-order lag `K_exc/(1+T_exc·s)` — see [Part I §8](model/08_controls_avr_governor.md)), with reference-style smooth
-saturation to `[E_min, E_max]` from `TsBoundLimitsConfig` (default `[0, 2]` pu). The saturated
-`E_fd(t)` couples into the Eq EMF ODE. Requires `T_exc, K_exc` in `gen_dynamic_data_full.csv`.
-Pre-fault: `E_fd = K_exc·(V_ref − V_bus)`. Can be combined with `include_governor=true` on DQ_4TH.
+When `include_avr=true`, field voltage `E_fd` becomes a time-varying state driven by
+terminal-voltage feedback through the SEXS chain:
+
+```text
+u = V_ref − V_terminal
+E_LL = (1 + Ta_exc·s) / (1 + Tb_exc·s) · u          # lead-lag (optional)
+T_exc · d(E_fd_unlim)/dt = K_exc · E_LL − E_fd_unlim  # gain-lag
+E_fd = smoothclamp(E_fd_unlim; E_min, E_max)
+```
+
+Requires `T_exc, K_exc, Ta_exc, Tb_exc` in `gen_dynamic_data_full.csv`. Saturation
+limits come from `TsBoundLimitsConfig` (default `[0, 2]` pu). The saturated `E_fd(t)`
+couples into the Eq EMF ODE. Pre-fault: `E_fd = K_exc·(V_ref − V_bus)` (unity DC gain
+through the lead-lag, so the steady-state link is unchanged). Can be combined with
+`include_governor=true` on DQ_4TH.
+
+**Lead-lag bypass.** `Ta_exc = Tb_exc = 0` skips the lead-lag stage entirely for that
+generator — no `E_LL` variables, no rows — matching ANDES `zero_out=True`. Every
+shipped fixture uses this, so default AVR runs are identical to the old
+first-order-only model. `Tb_exc = 0` with `Ta_exc > 0` is rejected
+(`validate_dyn_data!`): that is a bare differentiator with no state-space realization.
+Both time constants must be ≥ 0. When `Tb_exc > 0` and `t_step > 2·Tb_exc`, the
+builder warns that the trapezoidal update will alternate in sign (stable ringing).
+
+**Gain-lag values.** `T_exc` and `K_exc` must both be **> 0**, also enforced by
+`validate_dyn_data!`. The exciter row divides by `T_exc` (`c = Δt/(2·T_exc)`), and
+`K_exc = 0` would pin the pre-fault link to `E_fd = 0` and strip the exciter of its
+voltage feedback — a run that converges to something meaningless rather than failing.
+Both checks apply only under `include_avr = true`, so a DQ-only run may still leave
+these columns blank.
 
 Trajectories: `avr_V_ref.csv`, `dq_E_fd_pu.csv` (saturated), `dq_E_fd_unlim_pu.csv`
-(pre-saturation). The gap between the two shows exactly when the exciter is clamping.
-Duals: `dual_Vref_init`, `dual_avr_E_fd` (ODE on `E_fd_unlim`), `dual_avr_E_fd_sat` (clamp).
+(pre-saturation), and `dq_E_LL_pu.csv` when the lead-lag is active. The gap between
+`E_fd` and `E_fd_unlim` shows when the exciter is clamping.
+Duals: `dual_Vref_init`, `dual_avr_leadlag` (when present), `dual_avr_E_fd` (ODE on
+`E_fd_unlim`), `dual_avr_E_fd_sat` (clamp).
 
 See [`docs/dynamic_controls_avr_governor.md`](dynamic_controls_avr_governor.md) for the AVR block diagram.
 
@@ -502,21 +528,97 @@ See [`docs/dynamic_controls_avr_governor.md`](dynamic_controls_avr_governor.md) 
 `E_fd` (constant by default; dynamic when `include_avr=true`). Mechanical power is constant
 `P_m` by default; time-varying `P_mech(t)` when `include_governor=true`. Requires
 `gen_dynamic_data_full.csv` with columns `Xq_tr, Xd, Xq, Td, Tq, Ra` in addition to the usual
-`Xd_tr, H, D` (plus `T_exc,K_exc` for AVR and `R,T1,T2,T3` for governor). SC and GL faults are
+`Xd_tr, H, D` (plus `T_exc,K_exc,Ta_exc,Tb_exc` for AVR and `R,T1,T2,T3` for governor). SC and GL faults are
 supported on the FULL_BUS network path.
 `TSC-DCOPF` + `DQ_4TH` is not implemented.
 
-### 4.2 Loads and stability bounds
+### 4.2 Loads and stability corridors
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `zip_load_p` | `(Float64,Float64,Float64)` | `(1,0,0)` | **Active**-demand `(Z,I,P)` = impedance / current / power fractions; **must sum to 1**; default = constant impedance |
 | `zip_load_q` | `(Float64,Float64,Float64)` | `(1,0,0)` | **Reactive**-demand `(Z,I,P)` split; independent of `zip_load_p`; **must sum to 1** |
-| `bound_style` | `Symbol` | `:swing_propagated` | `:coi_box` = box the COI-relative angle directly, `δ_tol[1] ≤ δ_g − δ_COI ≤ δ_tol[2]`; `:swing_propagated` = substitute one swing step into that band, so the rows also carry `P_mech`, `Pe`, `Δω`, `ω_syn`, `Δt`. Honoured on **every** network form (Kron, Kron-linear, FULL_BUS): the two forms price differently, so a Kron-vs-FULL_BUS dual comparison must fix the same style on both sides. |
-| `constrain_Δω_COI` | `Bool` | `false` | Box on Δωᵢ − Δω_COI |
+| `constrain_δ` | `Bool` | `true` | Build the rotor-angle corridor |
+| `bound_style_δ` | `Symbol` | `:swing_propagated` | Reference and form of that corridor — see the table below |
+| `δ_ref_gen_id` | `Int` or `nothing` | `nothing` | Reference machine id; **required** by `bound_style_δ = :ref_gen`, ignored (with a warning) otherwise |
+| `constrain_Δω` | `Bool` | `false` | Build the speed corridor |
+| `bound_style_Δω` | `Symbol` | `:coi_box` | `:coi_box` = box on `Δωᵢ − Δω_COI`; `:abs` = box on the raw `Δωᵢ`, no COI formed |
 | `Δω_tol_pu` | `Float64` | `0.5` | Symmetric half-width [p.u.] when lower/upper unset |
-| `Δω_tol_pu_lower` | `Float64` or `nothing` | `nothing` | Below-COI limit [p.u.]; default → `Δω_tol_pu` |
-| `Δω_tol_pu_upper` | `Float64` or `nothing` | `nothing` | Above-COI limit [p.u.]; default → `Δω_tol_pu` |
+| `Δω_tol_pu_lower` | `Float64` or `nothing` | `nothing` | Below-reference limit [p.u.]; default → `Δω_tol_pu` |
+| `Δω_tol_pu_upper` | `Float64` or `nothing` | `nothing` | Above-reference limit [p.u.]; default → `Δω_tol_pu` |
+
+#### The rotor-angle corridor
+
+The two corridors are independent: each has its own toggle and its own reference, and a
+transient run must enable at least one of them. Angle half-widths come from
+`TsSimulationConfig.δ_tol_deg*`; the reference is chosen by `bound_style_δ`:
+
+| `bound_style_δ` | Reference | Rows built |
+|---|---|---|
+| `:swing_propagated` | δ_COI | `δ_tol[1] ≤ δ_g − δ_COI ≤ δ_tol[2]` with one swing step substituted for `δ_g[t]`, so the rows also carry `P_mech`, `Pe`, `Δω`, `ω_syn`, `Δt` |
+| `:coi_box` | δ_COI | the same band, boxed directly |
+| `:highest_H` | largest-`H` **surviving** machine | `δ_tol[1] ≤ δ_g − δ_ref ≤ δ_tol[2]` |
+| `:ref_gen` | `δ_ref_gen_id` | same |
+
+The machine-referenced styles follow the convention used in much of the
+transient-stability literature: bound the angular separation of the n−1 remaining machines
+against one live reference unit. The reference carries **no row of its own** — `δ_ref − δ_ref ≡ 0`
+can never bind and its dual would mean nothing — so a fleet of `n` machines yields `n−1`
+corridors per window.
+
+`:highest_H` picks over the machines that **survive the disturbance**, so a unit the run is
+about to trip can never become the reference. The resolved id is recorded in
+`dynamic_model_details.txt` and in the `δ_ref_gen` column of `swing_debug.csv`.
+
+On a mixed SG + GFM fleet the two machine-referenced styles **also bound the converters**,
+against the same reference and the same `δ_tol`: `δ_g − δ_ref` needs no inertia from `g`,
+only an angle in the same frame. The COI-referenced styles (`:coi_box`,
+`:swing_propagated`) stay SG-only, because their reference is inertia-weighted. The same
+split applies on the speed side — `bound_style_Δω = :abs` spans the converters, `:coi_box`
+does not. A converter can be the reference under `:ref_gen`, but never under `:highest_H`,
+which ranks by `H`. Converter duals arrive as extra `Gen_*` columns in the existing
+`dual_delta_ref_*.csv` / `dual_Delta_Omega_abs_*.csv`; `swing_debug.csv` remains SG-only.
+
+Every style is honoured on **every** network form (Kron, Kron-linear, FULL_BUS), and they
+price differently — a Kron-vs-FULL_BUS dual comparison must fix the same style on both
+sides. Note that `USE_PM` rejects `:swing_propagated`, and `FULL_BUS` requires `USE_PM`, so
+in practice the propagated form is a Kron + `USE_PG` option.
+
+Duals export under `dual_δ_COI_lower` / `dual_δ_COI_upper` for the COI-referenced styles and
+under `dual_δ_ref_lower` / `dual_δ_ref_upper` for the machine-referenced ones. Only one
+family exists in a given run; the names are kept apart because the shadow price of "stay
+within δ_tol of the COI" and of "stay within δ_tol of machine k" are different quantities.
+
+When the corridor does not reference the COI, no `δ_COI` variable and no defining equality
+are built — the COI survives as an unconstrained expression, so `angle_rel_COI.csv` and the
+`δ_rel_COI` column of `swing_debug.csv` are still written, but `dual_δCOI` is absent and
+`TsBuilderConfig.bound_δCOI_tf` / `bound_δCOI_tpf` are rejected at validation. A
+machine-referenced run additionally writes `angle_rel_ref.csv`, which is the trajectory the
+corridor actually bounds.
+
+#### The speed corridor
+
+`constrain_Δω = true` boxes the speed deviation, and `bound_style_Δω` picks against what.
+`:coi_box` builds the `Δω_COI` variable and bounds `Δωᵢ − Δω_COI`; `:abs` bounds the raw
+`Δωᵢ` of the swing equation and forms no COI at all.
+
+!!! warning "`:abs` also prices the common-mode excursion"
+    These are not the same constraint with the COI held at zero. `Δω_COI` is a free
+    variable the optimiser can shift, so the COI box prices only the *spread* between
+    machines, while the absolute box additionally pins how far the whole fleet drifts from
+    synchronous speed. During a bus short circuit that drift is largely redispatch-invariant
+    — mechanical power is fixed while electrical power collapses — so an absolute band
+    tighter than it makes the problem **infeasible**, not merely expensive. On the 9-bus
+    case at `load_factor = 1.5`, contingency 2, `Δω_tol_pu = 0.02` is infeasible while the
+    `0.5` default solves. Start loose and tighten.
+
+Like `δ_tol_deg_lower` / `δ_tol_deg_upper`, both Δω overrides are **positive magnitudes**, so
+`Δω_tol_pu_lower = 0.05` with `Δω_tol_pu_upper = 0.03` gives the signed corridor
+`−0.05 ≤ Δωᵢ − Δω_ref ≤ 0.03`. Setting only one leaves the other at `Δω_tol_pu`. Useful when
+under- and over-frequency excursions carry different consequences. Both styles read the same
+three fields, and duals export as `dual_Δω_COI_*` or `dual_Δω_abs_*` respectively.
+
+#### ZIP load splits
 
 The two ZIP vectors are **independent** because TSOs do not generally apply the same load
 model to both channels. The Spanish TSO, for instance, recommends representing active demand
@@ -543,11 +645,6 @@ Because the balance is scaled by the steady-state voltage `V`, the load term rea
 `V_t = V` for any split summing to 1. A mixed P/Q pair therefore stays consistent with the
 constant-power ACOPF warm start at `t = 0`; the two channels only diverge off equilibrium.
 
-Like `δ_tol_deg_lower` / `δ_tol_deg_upper`, both Δω overrides are **positive magnitudes**, so
-`Δω_tol_pu_lower = 0.05` with `Δω_tol_pu_upper = 0.03` gives the signed corridor
-`−0.05 ≤ Δωᵢ − Δω_COI ≤ 0.03`. Setting only one leaves the other at `Δω_tol_pu`. Useful when
-under- and over-frequency excursions carry different consequences.
-
 ### 4.3 Validation rules (important)
 
 !!! warning "Enforced in `validate_dyn_config!`, not just convention"
@@ -555,13 +652,16 @@ under- and over-frequency excursions carry different consequences.
     guidance — a run that violates one fails fast rather than building a model
     that silently means something different than you intended.
 
-- `USE_PM` **requires** `bound_style = :coi_box`
+- `USE_PM` **rejects** `bound_style_δ = :swing_propagated` (that row substitutes the dispatch power into the angle band, which is inconsistent with an explicit `P_m`); the three box styles are all valid
+- a transient run **requires at least one corridor**: `constrain_δ = true` or `constrain_Δω = true`
+- `bound_style_δ = :ref_gen` **requires** `δ_ref_gen_id`; the id is checked against the system data by `validate_δ_reference!` (in service, not tripped, at least two surviving units) before the warm-start solve. A GFM id is accepted; the `H > 0` and id-range checks then do not apply, since `gen_dynamic_data` holds machine rows only. `:highest_H` additionally requires one surviving machine with `H > 0` — it ranks by inertia, so its reference is never a converter
+- `bound_style_δ ∈ (:highest_H, :ref_gen)` **rejects** `TsBuilderConfig.bound_δCOI_tf` / `bound_δCOI_tpf`, which need a `δ_COI` variable those styles do not build
 - `FULL_BUS` **requires** `mech_power_mode = USE_PM`, and always pre-solves the steady-state ACOPF that seeds the coupling variables (there is no flat-start alternative; a failed pre-solve aborts the run)
 - `ode_first_step = :backward_euler` **requires** `network_form = FULL_BUS` — the Kron swing rows are trapezoidal at every step, so the Kron paths reject it instead of silently ignoring it
 - `TSC-DCOPF` + `FULL_BUS` → **not implemented**
 - `zip_load_p` and `zip_load_q` coefficients must each sum to 1 (checked per vector)
-- `DQ_4TH` **requires** `FULL_BUS`, `mech_power_mode=USE_PM`, `bound_style=:coi_box`, and full machine columns in `gen_dynamic_data` (use `gen_dynamic_data_full.csv`)
-- `include_avr=true` **requires** `gen_order=DQ_4TH` (and `T_exc,K_exc` in the dynamic CSV)
+- `DQ_4TH` **requires** `FULL_BUS`, `mech_power_mode=USE_PM`, a box-form `bound_style_δ`, and full machine columns in `gen_dynamic_data` (use `gen_dynamic_data_full.csv`)
+- `include_avr=true` **requires** `gen_order=DQ_4TH` (and `T_exc,K_exc,Ta_exc,Tb_exc` in the dynamic CSV; `Ta_exc=Tb_exc=0` is the lead-lag bypass)
 - `include_governor=true` on DQ_4TH uses the same TGOV1 layer as classical FULL_BUS (`R,T1,T2,T3` in CSV)
 - `TSC-DCOPF` + `DQ_4TH` → **not implemented**
 - `include_avr` **requires** `gen_order = DQ_4TH` when enabled (reserved)
@@ -603,7 +703,7 @@ Timing is controlled by `transient.simulation` (§3.1), not `contingencies.csv`.
 dyn_model = DynModelConfig(
     network_form = FULL_BUS,
     mech_power_mode = USE_PM,
-    bound_style = :coi_box,
+    bound_style_δ = :coi_box,
     fault = FaultConfig(fault_type = GL, gl_gen_ids = [3]),
 )
 ```
@@ -706,7 +806,7 @@ cfg = RunConfig(
         dyn_model = DynModelConfig(
             network_form    = FULL_BUS,
             mech_power_mode = USE_PM,
-            bound_style     = :coi_box,
+            bound_style_δ     = :coi_box,
             zip_load_p        = (1.0, 0.0, 0.0),  # (Z, I, P) — active demand, constant impedance
             zip_load_q        = (1.0, 0.0, 0.0),  # (Z, I, P) — reactive demand, constant impedance
             fault = FaultConfig(contingency_id = 2),

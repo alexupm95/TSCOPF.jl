@@ -29,8 +29,11 @@ Snapshot of the `DynModelConfig` fields that the Kron builders actually consume.
 struct ClassicalKronModel <: AbstractDynamicGenModel
     linearize::Bool               # false → tsred (ACOPF); true → tsredlinear (DCOPF)
     mech_power_mode::MechPowerMode # USE_PG: swing uses P_g; USE_PM: explicit P_m
-    bound_style::Symbol           # :swing_propagated | :coi_box
-    constrain_Δω_COI::Bool      # optional COI-relative Δω box bounds
+    constrain_δ::Bool             # build the rotor-angle corridor
+    bound_style_δ::Symbol         # :swing_propagated | :coi_box
+    δ_ref_gen_id::Union{Nothing, Int} # reference machine id (only for :ref_gen)
+    constrain_Δω::Bool            # build the speed corridor
+    bound_style_Δω::Symbol        # :coi_box
     Δω_tol::Tuple{Float64, Float64} # signed (lower, upper) of that box [p.u.]; may be asymmetric
 end
 
@@ -49,14 +52,17 @@ gen_order(::ClassicalKronModel) = CLASSICAL_2ND
 
 Classical swing on the full sparse admittance matrix (no Kron reduction).
 Reference full-network TSC-ACOPF formulation.  TSC-ACOPF only; default
-`mech_power_mode=USE_PM`.  `bound_style` and `constrain_Δω_COI` follow the
-same conventions as `ClassicalKronModel`.  `ode_first_step` selects the
+`mech_power_mode=USE_PM`.  The two stability corridors follow the same
+conventions as `ClassicalKronModel`.  `ode_first_step` selects the
 integration rule for the first row of each window (the Kron path cannot).
 """
 struct ClassicalFullBusModel <: AbstractDynamicGenModel
     mech_power_mode::MechPowerMode
-    bound_style::Symbol           # :swing_propagated | :coi_box
-    constrain_Δω_COI::Bool        # optional COI-relative Δω box bounds
+    constrain_δ::Bool
+    bound_style_δ::Symbol         # :swing_propagated | :coi_box
+    δ_ref_gen_id::Union{Nothing, Int}
+    constrain_Δω::Bool
+    bound_style_Δω::Symbol
     Δω_tol::Tuple{Float64, Float64} # signed (lower, upper) [p.u.]; may be asymmetric
     zip_load_p::NTuple{3, Float64}  # active-demand (Z, I, P) split
     zip_load_q::NTuple{3, Float64}  # reactive-demand (Z, I, P) split; independent of P
@@ -82,8 +88,11 @@ governor (`include_governor`) drives time-varying `P_mech(t)`.
 """
 struct DqFullBusModel <: AbstractDynamicGenModel
     mech_power_mode::MechPowerMode
-    bound_style::Symbol
-    constrain_Δω_COI::Bool
+    constrain_δ::Bool
+    bound_style_δ::Symbol
+    δ_ref_gen_id::Union{Nothing, Int}
+    constrain_Δω::Bool
+    bound_style_Δω::Symbol
     Δω_tol::Tuple{Float64, Float64} # signed (lower, upper) [p.u.]; may be asymmetric
     zip_load_p::NTuple{3, Float64}  # active-demand (Z, I, P) split
     zip_load_q::NTuple{3, Float64}  # reactive-demand (Z, I, P) split; independent of P
@@ -120,8 +129,11 @@ function dynamic_gen_model(dyn::DynModelConfig; linearize::Bool)::AbstractDynami
         return ClassicalKronModel(
             linearize,
             dyn.mech_power_mode,
-            dyn.bound_style,
-            dyn.constrain_Δω_COI,
+            dyn.constrain_δ,
+            dyn.bound_style_δ,
+            dyn.δ_ref_gen_id,
+            dyn.constrain_Δω,
+            dyn.bound_style_Δω,
             Δω_tol_tuple(dyn),
         )
     elseif dyn.gen_order == CLASSICAL_2ND && dyn.network_form == FULL_BUS
@@ -129,8 +141,11 @@ function dynamic_gen_model(dyn::DynModelConfig; linearize::Bool)::AbstractDynami
             "FULL_BUS classical dynamics require TSC-ACOPF (linearize=false)."))
         return ClassicalFullBusModel(
             dyn.mech_power_mode,
-            dyn.bound_style,
-            dyn.constrain_Δω_COI,
+            dyn.constrain_δ,
+            dyn.bound_style_δ,
+            dyn.δ_ref_gen_id,
+            dyn.constrain_Δω,
+            dyn.bound_style_Δω,
             Δω_tol_tuple(dyn),
             dyn.zip_load_p,
             dyn.zip_load_q,
@@ -141,8 +156,11 @@ function dynamic_gen_model(dyn::DynModelConfig; linearize::Bool)::AbstractDynami
     elseif dyn.gen_order == DQ_4TH && dyn.network_form == FULL_BUS
         return DqFullBusModel(
             dyn.mech_power_mode,
-            dyn.bound_style,
-            dyn.constrain_Δω_COI,
+            dyn.constrain_δ,
+            dyn.bound_style_δ,
+            dyn.δ_ref_gen_id,
+            dyn.constrain_Δω,
+            dyn.bound_style_Δω,
             Δω_tol_tuple(dyn),
             dyn.zip_load_p,
             dyn.zip_load_q,
@@ -179,22 +197,22 @@ function register_dyn_model_meta!(
     dyn_model_dict[:meta][:gen_model_type] = string(nameof(typeof(gen_model)))
     dyn_model_dict[:meta][:gen_order] = string(gen_order(gen_model))
     dyn_model_dict[:meta][:network_form] = string(network_form(gen_model))
+    # Stability corridors — the same five fields on every model type, so they are written
+    # once here rather than repeated (and, previously, half-forgotten on the Kron branch).
+    for key in (:constrain_δ, :bound_style_δ, :δ_ref_gen_id, :constrain_Δω,
+                :bound_style_Δω, :Δω_tol)
+        dyn_model_dict[:meta][key] = getfield(gen_model, key)
+    end
+
     if gen_model isa ClassicalKronModel
         dyn_model_dict[:meta][:linearize] = gen_model.linearize
-        dyn_model_dict[:meta][:bound_style] = gen_model.bound_style
     elseif gen_model isa ClassicalFullBusModel
-        dyn_model_dict[:meta][:bound_style] = gen_model.bound_style
-        dyn_model_dict[:meta][:constrain_Δω_COI] = gen_model.constrain_Δω_COI
-        dyn_model_dict[:meta][:Δω_tol] = gen_model.Δω_tol
         dyn_model_dict[:meta][:zip_load_p] = collect(gen_model.zip_load_p)
         dyn_model_dict[:meta][:zip_load_q] = collect(gen_model.zip_load_q)
         dyn_model_dict[:meta][:include_governor] = gen_model.include_governor
         dyn_model_dict[:meta][:governor_limiter] = string(gen_model.governor_limiter)
         dyn_model_dict[:meta][:ode_first_step] = gen_model.ode_first_step
     elseif gen_model isa DqFullBusModel
-        dyn_model_dict[:meta][:bound_style] = gen_model.bound_style
-        dyn_model_dict[:meta][:constrain_Δω_COI] = gen_model.constrain_Δω_COI
-        dyn_model_dict[:meta][:Δω_tol] = gen_model.Δω_tol
         dyn_model_dict[:meta][:zip_load_p] = collect(gen_model.zip_load_p)
         dyn_model_dict[:meta][:zip_load_q] = collect(gen_model.zip_load_q)
         dyn_model_dict[:meta][:dq_speed_dev_in_algebra] = gen_model.dq_speed_dev_in_algebra

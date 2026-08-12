@@ -208,11 +208,11 @@ const dyn_model_cfg = DynModelConfig(
     # (Z, I, P) splits — real physics on FULL_BUS. (1,0,0) = constant impedance.
     zip_load_p              = (1.0, 0.0, 0.0),  # active demand: 100 % constant impedance (∝ V²), 0 % current, 0 % power
     zip_load_q              = (1.0, 0.0, 0.0),  # reactive demand: same split, set independently of the active one
-    bound_style             = :coi_box,         # required by DQ_4TH: the stability limit is a direct corridor around the COI
+    bound_style_δ             = :coi_box,         # required by DQ_4TH: the stability limit is a direct corridor around the COI
     # A generator trip is a frequency event first. Switching this on puts a
     # corridor on Δω_i − Δω_COI, which is the natural constraint for GL.
-    constrain_Δω_COI        = false,            # false = no frequency corridor is built
-    Δω_tol_pu               = 0.5,              # half-width of that Δω corridor [pu]; read only when constrain_Δω_COI = true
+    constrain_Δω        = false,            # false = no frequency corridor is built
+    Δω_tol_pu               = 0.5,              # half-width of that Δω corridor [pu]; read only when constrain_Δω = true
     Δω_tol_pu_lower         = nothing,          # nothing = reuse Δω_tol_pu below the COI
     Δω_tol_pu_upper         = nothing,          # nothing = reuse Δω_tol_pu above the COI
     fault                   = fault_cfg,        # the FaultConfig instance built above

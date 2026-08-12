@@ -41,7 +41,7 @@ function dq_run(; speed_in_algebra::Bool = true, fault::FaultConfig = FaultConfi
                 gen_order = DQ_4TH,
                 network_form = FULL_BUS,
                 mech_power_mode = USE_PM,
-                bound_style = :coi_box,
+                bound_style_δ = :coi_box,
                 zip_load_p = DQ_ZIP,
                 zip_load_q = DQ_ZIP,
                 dq_speed_dev_in_algebra = speed_in_algebra,
@@ -68,7 +68,7 @@ end
         m = TSCOPF.dynamic_gen_model(
             DynModelConfig(
                 gen_order = DQ_4TH, network_form = FULL_BUS,
-                mech_power_mode = USE_PM, bound_style = :coi_box);
+                mech_power_mode = USE_PM, bound_style_δ = :coi_box);
             linearize = false)
         @test m isa TSCOPF.DqFullBusModel
         @test m.dq_speed_dev_in_algebra
@@ -118,7 +118,7 @@ end
                     gen_order = DQ_4TH,
                     network_form = FULL_BUS,
                     mech_power_mode = USE_PM,
-                    bound_style = :coi_box,
+                    bound_style_δ = :coi_box,
                     zip_load_p = DQ_ZIP,
                     zip_load_q = DQ_ZIP,
                     fault = FaultConfig(fault_type = GL, gl_gen_ids = [3]),
@@ -168,7 +168,7 @@ end
                     gen_order = DQ_4TH,
                     network_form = FULL_BUS,
                     mech_power_mode = USE_PM,
-                    bound_style = :coi_box,
+                    bound_style_δ = :coi_box,
                     zip_load_p = DQ_ZIP,
                     zip_load_q = DQ_ZIP,
                     fault = FaultConfig(fault_type = SC, contingency_id = 2),

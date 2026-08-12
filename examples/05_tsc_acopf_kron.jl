@@ -20,7 +20,7 @@
   that is solved once. Nothing is written to `Dispatch_WarmStart/` here, and
   `save_warmstart_dispatch = true` is rejected.
 
-  This example uses `mech_power_mode = USE_PM` with `bound_style = :coi_box`, the
+  This example uses `mech_power_mode = USE_PM` with `bound_style_δ = :coi_box`, the
   combination covered by test/runtests_tsc_builder_kron.jl. The package defaults
   `USE_PG` + `:swing_propagated` are also legal on Kron (that is what the smoke
   test runs) — USE_PM makes mechanical power a decision variable of its own
@@ -159,7 +159,7 @@ const fault_cfg = FaultConfig(
 const dyn_model_cfg = DynModelConfig(
     gen_order               = CLASSICAL_2ND,    # constant EMF behind X'd, two states (δ, Δω); DQ_4TH would require FULL_BUS
     network_form            = KRON_REDUCED,     # eliminate every non-machine bus into Y_red
-    mech_power_mode         = USE_PM,           # USE_PM = P_m is its own variable, which forces bound_style = :coi_box
+    mech_power_mode         = USE_PM,           # USE_PM = P_m is its own variable, which forces bound_style_δ = :coi_box
     dq_speed_dev_in_algebra = true,             # (1+Δω) in the stator algebra; DQ_4TH only, so inert here
     include_avr             = false,            # false is mandatory here: the AVR requires DQ_4TH
     include_governor        = false,            # false is mandatory here: the governor requires FULL_BUS
@@ -171,9 +171,9 @@ const dyn_model_cfg = DynModelConfig(
     # constant admittance — and a non-default value here only earns a warning.
     zip_load_p              = (1.0, 0.0, 0.0),  # active demand: 100 % constant impedance, 0 % current, 0 % power
     zip_load_q              = (1.0, 0.0, 0.0),  # reactive demand: same split, set independently of the active one
-    bound_style             = :coi_box,         # :coi_box = state the stability limit directly as a corridor around the COI
-    constrain_Δω_COI        = false,            # false = no corridor on Δω_i − Δω_COI; true builds the frequency box
-    Δω_tol_pu               = 0.5,              # half-width of that Δω corridor [pu]; read only when constrain_Δω_COI = true
+    bound_style_δ             = :coi_box,         # :coi_box = state the stability limit directly as a corridor around the COI
+    constrain_Δω        = false,            # false = no corridor on Δω_i − Δω_COI; true builds the frequency box
+    Δω_tol_pu               = 0.5,              # half-width of that Δω corridor [pu]; read only when constrain_Δω = true
     Δω_tol_pu_lower         = nothing,          # nothing = reuse Δω_tol_pu below the COI
     Δω_tol_pu_upper         = nothing,          # nothing = reuse Δω_tol_pu above the COI
     fault                   = fault_cfg,        # the FaultConfig instance built above

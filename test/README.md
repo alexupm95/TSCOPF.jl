@@ -78,6 +78,7 @@ solve per testset.
 
 | File | What it adds |
 |------|--------------|
+| `runtests_delta_reference.jl` | Every δ / Δω corridor style on Kron 9-bus: `:highest_H` and `:ref_gen` reference resolution, n−1 row count, δ_COI as an expression, `:abs` speed box, `validate_δ_reference!`, and the reference-relative exports |
 | `runtests_dq_fullbus.jl` | DQ_4TH FULL_BUS: SC, GL gen trip (COI over survivors), OB open branch, optional Ed bounds |
 | `runtests_gfm_transient.jl` | Mixed SG + GFM solve on `9bus_gfm` (contingency 2, 150 ms clearing, limiter active): named GFM equality families, GFM boxes in both encodings, dual-registry entries, CONSTRAINT ≡ VARIABLE objective |
 | `runtests_controls.jl` | 5 end-to-end solves: classical+TGOV1, DQ+TGOV1, DQ+AVR, DQ+AVR+TGOV1, and the flat-start coupling path |
@@ -146,6 +147,7 @@ Also runs in the nightly heavy job.
 | Dual registries, dual export | `runtests_dispatch_duals_registry.jl`, `runtests_explicit_dual.jl`, `runtests_bound_encoding.jl` |
 | Ybus / Kron reduction | `runtests_admittance_matrices.jl` |
 | Kron TS builder | `runtests_tsc_builder_kron.jl` |
+| δ / Δω corridor styles (`bound_style_δ`, `bound_style_Δω`, `constrain_*`) | `runtests_fast_unit.jl` (validation), then `runtests_delta_reference.jl` (heavy) |
 | FULL_BUS TS builder | `runtests_tsc_builder_fullbus.jl` (+ `TSCOPF_RUN_HEAVY`) |
 | DQ_4TH machine | `runtests_dq_fullbus.jl` |
 | AVR or governor | `runtests_controls.jl` |

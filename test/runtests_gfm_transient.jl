@@ -26,12 +26,17 @@ include(joinpath(@__DIR__, "test_env.jl"))
 const GFM_SOLVED = (OPTIMAL, LOCALLY_SOLVED, ALMOST_LOCALLY_SOLVED, ITERATION_LIMIT)
 const GFM_ZIP = (1.0, 0.0, 0.0)
 
-function gfm_run(; encoding::BoundEncoding = TSCOPF.CONSTRAINT,
-                   builder_kwargs::NamedTuple = NamedTuple(),
-                   ode_first_step::Symbol = :trapezoidal,
-                   save_ts_debug_csv::Bool = false,
-                   save_ts_plots::Bool = false)
-    cfg = RunConfig(;
+function gfm_config(; encoding::BoundEncoding = TSCOPF.CONSTRAINT,
+                     builder_kwargs::NamedTuple = NamedTuple(),
+                     ode_first_step::Symbol = :trapezoidal,
+                     save_ts_debug_csv::Bool = false,
+                     save_ts_plots::Bool = false,
+                     bound_style_δ::Symbol = :coi_box,
+                     δ_ref_gen_id::Union{Nothing, Int} = nothing,
+                     constrain_Δω::Bool = false,
+                     bound_style_Δω::Symbol = :coi_box,
+                     fault::FaultConfig = FaultConfig(fault_type = SC, contingency_id = 2))
+    return RunConfig(;
         trans_stab = true,
         case = "9bus_gfm",
         solver_name = "Ipopt",
@@ -55,15 +60,22 @@ function gfm_run(; encoding::BoundEncoding = TSCOPF.CONSTRAINT,
                 gen_order = DQ_4TH,
                 network_form = FULL_BUS,
                 mech_power_mode = USE_PM,
-                bound_style = :coi_box,
+                bound_style_δ = bound_style_δ,
+                δ_ref_gen_id = δ_ref_gen_id,
+                constrain_Δω = constrain_Δω,
+                bound_style_Δω = bound_style_Δω,
                 zip_load_p = GFM_ZIP,
                 zip_load_q = GFM_ZIP,
                 dq_speed_dev_in_algebra = true,
                 ode_first_step = ode_first_step,
-                fault = FaultConfig(fault_type = SC, contingency_id = 2),
+                fault = fault,
             ),
         ),
     )
+end
+
+function gfm_run(; kwargs...)
+    cfg = gfm_config(; kwargs...)
     validate_dyn_config!(cfg)
     sys = load_fixture_system(cfg)
     return run_fixture_case!(cfg, sys)
@@ -230,5 +242,127 @@ end
         @test haskey(io, :ineq_const_gfm_P_meas_tf_lower)
         # Guard-rails do not shape the optimum: same objective as the full run.
         @test isapprox(res_off.obj_MVA, res.obj_MVA; rtol = 1e-4)
+    end
+
+    @testset "stability corridors span the converter" begin
+        sys_gfm = load_fixture_system(gfm_config())
+
+        # The base run above is `:coi_box` with no speed corridor, so it already answers
+        # the "SG-only where it must stay SG-only" half of this: the converter carries no
+        # inertia and so no row against an inertia-weighted reference.
+        @test 4 ∉ keys(dd[:ineq_const][:ineq_const_δ_COI_tf_lower])
+        @test Set(keys(dd[:ineq_const][:ineq_const_δ_COI_tpf_upper])) == Set([1, 2, 3])
+
+        # --- machine-referenced δ + absolute Δω: both span the mixed fleet -------------
+        res_h = gfm_run(; bound_style_δ = :highest_H,
+            constrain_Δω = true, bound_style_Δω = :abs, save_ts_debug_csv = true)
+        @test res_h.status in GFM_SOLVED
+        dh = res_h.dyn_model_dict
+        active = dh[:active_gen]
+
+        # :highest_H ranks by inertia, so the reference is a machine even here.
+        ref = dh[:meta][:δ_ref_gen_resolved]
+        sg = dh[:meta][:sg_gens]
+        @test ref ∈ sg
+        @test ref == sg[argmax([Float64(sys_gfm.DGEN_DYN.H[g]) for g in sg])]
+
+        δ_rows = keys(dh[:ineq_const][:ineq_const_δ_ref_tf_lower])
+        @test 4 ∈ δ_rows                                   # the converter is bounded
+        @test ref ∉ δ_rows                                 # the reference is not
+        @test length(δ_rows) == length(active) - 1
+        @test 4 ∈ keys(dh[:ineq_const][:ineq_const_δ_ref_tpf_upper])
+
+        ω_rows = keys(dh[:ineq_const][:ineq_const_Δω_abs_tf_lower])
+        @test Set(ω_rows) == Set(active)                   # :abs bounds every unit
+        @test !haskey(dh[:vars], :ΔωCOI_tf)                # and forms no COI at all
+
+        # Duals ride the merged families: the converter is just another column.
+        dual_dir = res_h.path_names[:pf_TS_CSV_duals]
+        dual_df = CSV.read(joinpath(dual_dir, "dual_delta_ref_upper.csv"),
+            DataFrame; delim = ';')
+        @test "Gen_4" ∈ names(dual_df)
+        @test "Gen_$(ref)" ∉ names(dual_df)
+        ω_df = CSV.read(joinpath(dual_dir, "dual_Delta_Omega_abs_upper.csv"),
+            DataFrame; delim = ';')
+        @test "Gen_4" ∈ names(ω_df)
+
+        # swing_debug stays SG-only on purpose: its columns (H, D, accelerating power) have
+        # no meaning for a droop converter. The corridor duals live in the CSVs above.
+        tw_h = res_h.dyn_parameters_dict[:time]
+        n_steps_h = length(tw_h[:t_window_fault]) + length(tw_h[:t_window_postf])
+        swing_h = CSV.read(
+            joinpath(res_h.path_names[:pf_TS_CSV], "Debug", "swing_debug.csv"),
+            DataFrame; delim = ';')
+        @test nrow(swing_h) == length(sg) * n_steps_h
+
+        # --- a converter as the reference, with an SG-only speed corridor --------------
+        res_g = gfm_run(; bound_style_δ = :ref_gen, δ_ref_gen_id = 4,
+            constrain_Δω = true, bound_style_Δω = :coi_box)
+        @test res_g.status in GFM_SOLVED
+        dg = res_g.dyn_model_dict
+        @test dg[:meta][:δ_ref_gen_resolved] == 4
+        @test Set(keys(dg[:ineq_const][:ineq_const_δ_ref_tf_lower])) == Set([1, 2, 3])
+        # :coi_box on the speed side is inertia-weighted, so the converter is left out.
+        @test Set(keys(dg[:ineq_const][:ineq_const_Δω_COI_tf_lower])) == Set([1, 2, 3])
+        @test haskey(dg[:vars], :ΔωCOI_tf)
+    end
+
+    @testset "a GL disturbance can trip the converter itself" begin
+        # Nothing in the GL path is unit-type aware: it zeroes g_status on a deepcopy,
+        # recomputes active_gen, and re-partitions SG/GFM from the survivors. So the
+        # converter drops out of the dynamic model with no GFM-specific code. The corridor
+        # is :highest_H here precisely because that style *would* bound a converter — this
+        # pins that a tripped one is excluded for being gone, not for being a converter.
+        res_gl = gfm_run(; bound_style_δ = :highest_H,
+            fault = FaultConfig(fault_type = GL, gl_gen_ids = [4]))
+        @test res_gl.status in GFM_SOLVED
+        dgl = res_gl.dyn_model_dict
+
+        @test dgl[:active_gen] == [1, 2, 3]
+        @test dgl[:meta][:sg_gens] == [1, 2, 3]
+        @test isempty(dgl[:meta][:gfm_gens])     # none active…
+        @test dgl[:meta][:n_gfm] == 1            # …though the fleet still has one
+
+        # The disconnection has to mean something: the converter is dispatched
+        # pre-contingency and only then lost. A trip of an unloaded unit would be vacuous.
+        @test res_gl.RGEN !== nothing
+        row_4 = findfirst(==(4), res_gl.RGEN.id)
+        @test row_4 !== nothing
+        @test res_gl.RGEN.p_g[row_4] > 1.0
+
+        # No converter rows anywhere in the transient: the GFM window body is skipped
+        # wholesale when no converter survives.
+        for fam in TSCOPF._GFM_EQ_FAMILIES, window in ("tf", "tpf")
+            @test !haskey(dgl[:eq_const], Symbol("eq_const_gfm_", fam, "_", window))
+        end
+        @test !haskey(dgl[:ineq_const], :ineq_const_gfm_Id_tf_lower)
+
+        # …and the corridor spans the survivors only, reference excluded as always.
+        ref_gl = dgl[:meta][:δ_ref_gen_resolved]
+        δ_rows_gl = keys(dgl[:ineq_const][:ineq_const_δ_ref_tf_lower])
+        @test 4 ∉ δ_rows_gl
+        @test ref_gl ∉ δ_rows_gl
+        @test length(δ_rows_gl) == 2
+    end
+
+    @testset "validate_δ_reference! on a mixed fleet" begin
+        # No solve: these are the data-aware checks that must fire before the warm start.
+        cfg = gfm_config(; bound_style_δ = :ref_gen, δ_ref_gen_id = 4)
+        sys = load_fixture_system(cfg)
+
+        # A converter is a legal reference now — it has no H row, and none is needed.
+        @test validate_δ_reference!(cfg, sys.DGEN, sys.DGEN_DYN, sys.DGFM) === nothing
+        # …but only while it is synchronised.
+        tripped = gfm_config(; bound_style_δ = :ref_gen, δ_ref_gen_id = 4,
+            fault = FaultConfig(fault_type = GL, gl_gen_ids = [4]))
+        @test_throws ArgumentError validate_δ_reference!(
+            tripped, sys.DGEN, sys.DGEN_DYN, sys.DGFM)
+        # An id belonging to no unit at all is still rejected.
+        missing_id = gfm_config(; bound_style_δ = :ref_gen, δ_ref_gen_id = 99)
+        @test_throws ArgumentError validate_δ_reference!(
+            missing_id, sys.DGEN, sys.DGEN_DYN, sys.DGFM)
+        # :highest_H needs no converter data and stays valid.
+        @test validate_δ_reference!(gfm_config(; bound_style_δ = :highest_H),
+            sys.DGEN, sys.DGEN_DYN, sys.DGFM) === nothing
     end
 end

@@ -60,7 +60,7 @@ function _export_dq_time_var_dicts(
     suffix::String,
 )::Vector{Any}
     dicts = Any[]
-    for stem in ("Ed", "Eq", "Id", "Iq", "Te", "E_fd", "E_fd_unlim")
+    for stem in ("Ed", "Eq", "Id", "Iq", "Te", "E_LL", "E_fd", "E_fd_unlim")
         key = Symbol(string(stem, "_", suffix))
         haskey(dyn_model_dict[:vars], key) && push!(dicts, dyn_model_dict[:vars][key])
     end
@@ -235,6 +235,7 @@ function _export_machine_control_eq_const_appendix!(
         ("DQ Stator Vq", :eq_const_Vq_tf, :eq_const_Vq_tpf),
         ("DQ EMF Ed dynamics", :eq_const_Ed_tf, :eq_const_Ed_tpf),
         ("DQ EMF Eq dynamics", :eq_const_Eq_tf, :eq_const_Eq_tpf),
+        ("AVR Lead-Lag (E_LL)", :eq_const_avr_leadlag_tf, :eq_const_avr_leadlag_tpf),
         ("AVR Exciter ODE (E_fd_unlim)", :eq_const_E_fd_unlim_tf, :eq_const_E_fd_unlim_tpf),
         ("AVR Field Softsat (E_fd)", :eq_const_E_fd_tf, :eq_const_E_fd_tpf),
         ("Governor Valve ODE (P_valve_raw)", :eq_const_gov_valve_tf, :eq_const_gov_valve_tpf),
@@ -292,22 +293,33 @@ end
 Model-metadata block printed once at the top of `dynamic_model_details.txt`.
 
 Shared by the Kron, Kron-linear and FULL_BUS exports, so the constraint listings that
-follow are never interrupted by configuration lines. `bound_style` names the δ-COI
-constraint form that was actually built, and the ZIP splits (FULL_BUS only) describe the
-load model inside the nodal balances — neither is recorded anywhere else in the results
-tree.
+follow are never interrupted by configuration lines. The two corridor blocks name the
+stability constraints that were actually built — including the resolved reference machine,
+which is a run-time choice under `:highest_H` and appears nowhere else in the results tree
+— and the ZIP splits (FULL_BUS only) describe the load model inside the nodal balances.
 """
 function _export_dyn_meta_header(dyn_model_dict::OrderedDict{Symbol, Any})::Vector{String}
     lines = String[_export_mech_power_mode_label(dyn_model_dict)]
     meta = get(dyn_model_dict, :meta, OrderedDict{Symbol, Any}())
-    haskey(meta, :bound_style) && push!(lines, "bound_style: $(meta[:bound_style])")
+    if get(meta, :constrain_δ, true)
+        style = get(meta, :bound_style_δ, :coi_box)
+        ref = get(meta, :δ_ref_gen_resolved, nothing)
+        # The reference is resolved over the surviving machines, so record which one the
+        # run actually used rather than only what was asked for.
+        suffix = ref === nothing ? "" : " (reference: generator $ref)"
+        push!(lines, "constrain_δ: true, bound_style_δ: $(style)$(suffix)")
+    else
+        push!(lines, "constrain_δ: false")
+    end
     haskey(meta, :ode_first_step) && push!(lines, "ode_first_step: $(meta[:ode_first_step])")
-    if get(meta, :constrain_Δω_COI, false)
+    if get(meta, :constrain_Δω, false)
         # Signed pair — may be asymmetric (Δω_tol_pu_lower / Δω_tol_pu_upper).
         lo, hi = meta[:Δω_tol]
-        push!(lines, "constrain_Δω_COI: true (Δω_tol = [$lo, +$hi] p.u.)")
+        style = get(meta, :bound_style_Δω, :coi_box)
+        push!(lines,
+            "constrain_Δω: true, bound_style_Δω: $(style) (Δω_tol = [$lo, +$hi] p.u.)")
     else
-        push!(lines, "constrain_Δω_COI: false")
+        push!(lines, "constrain_Δω: false")
     end
     haskey(meta, :zip_load_p) && push!(lines, "zip_load_p (Z,I,P): $(meta[:zip_load_p])")
     haskey(meta, :zip_load_q) && push!(lines, "zip_load_q (Z,I,P): $(meta[:zip_load_q])")
@@ -633,8 +645,13 @@ function Save_Prefault_Coupling_Starts!(
     return nothing
 end
 
+# δCOI_tf is optional like the rest: a machine-referenced δ corridor keeps the COI as an
+# expression, so there is no variable for this listing to show.
 function _export_fault_COI_var_dicts(dyn_model_dict::OrderedDict{Symbol, Any})::Vector{Any}
-    dicts = Any[dyn_model_dict[:vars][:δCOI_tf]]
+    dicts = Any[]
+    if haskey(dyn_model_dict[:vars], :δCOI_tf)
+        push!(dicts, dyn_model_dict[:vars][:δCOI_tf])
+    end
     if haskey(dyn_model_dict[:vars], :ΔωCOI_tf)
         push!(dicts, dyn_model_dict[:vars][:ΔωCOI_tf])
     end
@@ -1210,6 +1227,7 @@ function _export_fullbus_network_appendix!(
         ("Fault Period — dq Current Id_tf", :Id_tf),
         ("Fault Period — dq Current Iq_tf", :Iq_tf),
         ("Fault Period — Electrical Torque Te_tf", :Te_tf),
+        ("Fault Period — AVR Lead-Lag E_LL_tf", :E_LL_tf),
         ("Fault Period — AVR E_fd_unlim_tf", :E_fd_unlim_tf),
         ("Fault Period — AVR E_fd_tf", :E_fd_tf),
         ("Post-Fault Period — Bus Voltage Magnitude V_tpf", :V_tpf),
@@ -1220,6 +1238,7 @@ function _export_fullbus_network_appendix!(
         ("Post-Fault Period — dq Current Id_tpf", :Id_tpf),
         ("Post-Fault Period — dq Current Iq_tpf", :Iq_tpf),
         ("Post-Fault Period — Electrical Torque Te_tpf", :Te_tpf),
+        ("Post-Fault Period — AVR Lead-Lag E_LL_tpf", :E_LL_tpf),
         ("Post-Fault Period — AVR E_fd_unlim_tpf", :E_fd_unlim_tpf),
         ("Post-Fault Period — AVR E_fd_tpf", :E_fd_tpf),
         ("Fault Period — Governor Valve Raw P_valve_raw_tf", :Pv_raw_tf),
@@ -1364,7 +1383,7 @@ function Export_Dynamic_Model_fullbus(
         println(io, "============================================================")
         println(io, "FULL_BUS network-specific variables and constraints (appendix)")
         println(io, "============================================================")
-        # Model metadata (bound_style, ZIP splits, …) is printed once by
+        # Model metadata (bound_style_δ, ZIP splits, …) is printed once by
         # `_export_dyn_meta_header` at the top of the file, not here between the
         # shared constraint listing and the network one.
         println(io, "network_form: FULL_BUS")
@@ -1862,7 +1881,7 @@ function Save_Duals_Dynamic_Model_tsred(model::Model,
     # `extract_registered_duals` walks that list and returns a Dict keyed by
     # `export_name` (:dual_Pe, :dual_δ_COI_lower, …).
     #
-    # Optional families (Pm_init for USE_PM, ΔωCOI for constrain_Δω_COI, E bounds
+    # Optional families (Pm_init for USE_PM, ΔωCOI for constrain_Δω, E bounds
     # for TSC-ACOPF, …) appear only when the builder created those constraints.
     #
     # Local variables below are kept so the TXT / CSV / XLSX writers further down
@@ -1877,7 +1896,7 @@ function Save_Duals_Dynamic_Model_tsred(model::Model,
 
     # --- COI reference equalities (λ on δ_COI and optional Δω_COI constraints) --
     dual_δCOI = _getdual(:dual_δCOI)
-    dual_ΔωCOI = _getdual(:dual_ΔωCOI)      # constrain_Δω_COI only
+    dual_ΔωCOI = _getdual(:dual_ΔωCOI)      # constrain_Δω only
 
     # --- discretized swing / Pe equalities (per generator, fault + post-fault) ---
     dual_Pe = _getdual(:dual_Pe)
@@ -1922,6 +1941,7 @@ function Save_Duals_Dynamic_Model_tsred(model::Model,
     dual_Ed = _getdual(:dual_Ed)
     dual_Eq = _getdual(:dual_Eq)
     dual_Vref_init = _getdual(:dual_Vref_init)   # include_avr only
+    dual_avr_leadlag = _getdual(:dual_avr_leadlag)   # lead-lag stage only
     dual_avr_E_fd = _getdual(:dual_avr_E_fd)
     dual_avr_E_fd_sat = _getdual(:dual_avr_E_fd_sat)
 
@@ -2034,6 +2054,7 @@ function Save_Duals_Dynamic_Model_tsred(model::Model,
         dual_Ed !== nothing && for (i, info) in dual_Ed write_dual_voltage_pu(io, "dual_eq_Ed[G$i]", info) end
         dual_Eq !== nothing && for (i, info) in dual_Eq write_dual_voltage_pu(io, "dual_eq_Eq[G$i]", info) end
         dual_Vref_init !== nothing && write_dual_voltage_pu(io, "dual_Vref_init", dual_Vref_init)
+        dual_avr_leadlag !== nothing && for (i, info) in dual_avr_leadlag write_dual_voltage_pu(io, "dual_eq_E_LL[G$i]", info) end
         dual_avr_E_fd !== nothing && for (i, info) in dual_avr_E_fd write_dual_voltage_pu(io, "dual_eq_E_fd[G$i]", info) end
         dual_avr_E_fd_sat !== nothing && for (i, info) in dual_avr_E_fd_sat write_dual_voltage_pu(io, "dual_eq_E_fd_sat[G$i]", info) end
     end
@@ -2284,11 +2305,13 @@ function Save_Results_Dynamic_Model(model::Model,
     #                 δ
     # ====================================
     δ_tf_values  = OrderedDict(i => [JuMP.value(v) for (_, v) in inner] for (i, inner) in dyn_model_dict[:vars][:δ_tf])   # Values of δ during the fault
-    δCOI_tf_values  = [JuMP.value(v) for (i, v) in dyn_model_dict[:vars][:δCOI_tf]]  # Values of δ_COI during the fault
+    # δ_COI is a variable when the corridor references it and an expression otherwise;
+    # `JuMP.value` reads both, so `angle_rel_COI.csv` is produced either way.
+    δCOI_tf_values  = [JuMP.value(v) for (i, v) in _coi_series(dyn_model_dict, :δCOI_tf)]  # Values of δ_COI during the fault
 
     if haskey(dyn_model_dict[:vars], :δ_tpf)
         δ_tpf_values = OrderedDict(i => [JuMP.value(v) for (_, v) in inner] for (i, inner) in dyn_model_dict[:vars][:δ_tpf]) # Values of Pe in the post-fault
-        δCOI_tpf_values = [JuMP.value(v) for (i, v) in dyn_model_dict[:vars][:δCOI_tpf]] # Values of δ_COI in the post-fault
+        δCOI_tpf_values = [JuMP.value(v) for (i, v) in _coi_series(dyn_model_dict, :δCOI_tpf)] # Values of δ_COI in the post-fault
 
         δt = OrderedDict{Int, Vector{Float64}}()
         δ_COIt = OrderedDict{Int, Vector{Float64}}()  # δ individual in relation to COI across the whole simulation
@@ -2382,7 +2405,8 @@ function Save_Results_Dynamic_Model(model::Model,
         base_MVA, dyn_parameters_dict[:common][:f_syn], path_names;
         has_governor = haskey(dyn_model_dict[:vars], :Pm_tf),
         governed_gens = haskey(dyn_model_dict[:vars], :Pm_tf) ?
-            collect(Int, keys(dyn_model_dict[:vars][:Pm_tf])) : Int[])
+            collect(Int, keys(dyn_model_dict[:vars][:Pm_tf])) : Int[],
+        δ_ref_gen = get(dyn_model_dict[:meta], :δ_ref_gen_resolved, nothing))
 
     # Pre-fault internal EMF magnitude. `:E` exists on the classical Kron path as well as
     # on classical FULL_BUS, but the writer used to sit inside `Save_FullBus_Network_Results!`
@@ -2443,6 +2467,7 @@ function Save_Dynamic_Results_CSV_tsred(t_window_total::Vector{Float64},
     path_names::OrderedDict{Symbol, String};
     has_governor::Bool = false,
     governed_gens::Vector{Int} = Int[],
+    δ_ref_gen::Union{Nothing, Int} = nothing,
     )
 
     pf_ts_csv = path_names[:pf_TS_CSV]
@@ -2529,7 +2554,24 @@ function Save_Dynamic_Results_CSV_tsred(t_window_total::Vector{Float64},
         δ_COI_matrix[:,aux_count] = rad2deg.(values)
     end
     df_δ_COI = DataFrame(hcat(t_window_total, δ_COI_matrix), vcat("t", gen_names))
-    
+
+    # δ values relative to the reference machine, when the run used one. This — not the
+    # COI-relative trajectory — is the quantity the :highest_H / :ref_gen corridors bound,
+    # so it is what the corridor plots need. `nothing` on the COI-referenced styles.
+    df_δ_ref = nothing
+    if δ_ref_gen !== nothing && haskey(δt, δ_ref_gen)
+        δ_ref_trace = δt[δ_ref_gen]
+        δ_ref_matrix = zeros(Float64, length(t_window_total), length(δt))
+        aux_count = 0
+        for (gen_id, values) in δt
+            aux_count += 1
+            δ_ref_matrix[:, aux_count] = rad2deg.(values .- δ_ref_trace)
+        end
+        df_δ_ref = DataFrame(hcat(t_window_total, δ_ref_matrix),
+            vcat("t", ["G$(i)" for (i, _) in δt]))
+    end
+
+
     # Absolute values of Δω
     Δω_matrix = zeros(Float64, length(t_window_total), length(Δωt)+1)
     aux_count = 0
@@ -2628,6 +2670,8 @@ function Save_Dynamic_Results_CSV_tsred(t_window_total::Vector{Float64},
     CSV.write(joinpath(pf_ts_csv, "accelerating_power_COI.csv"), df_Pacc_COI; delim=';')
     CSV.write(joinpath(pf_ts_csv, "angle_abs.csv"), df_δ; delim=';')
     CSV.write(joinpath(pf_ts_csv, "angle_rel_COI.csv"), df_δ_COI; delim=';')
+    df_δ_ref === nothing ||
+        CSV.write(joinpath(pf_ts_csv, "angle_rel_ref.csv"), df_δ_ref; delim=';')
     CSV.write(joinpath(pf_ts_csv, "speed_dev.csv"), df_Δω; delim=';')
     CSV.write(joinpath(pf_ts_csv, "speed_dev_rel_COI.csv"), df_Δω_COI; delim=';')
     CSV.write(joinpath(pf_ts_csv, "frequency.csv"), df_f; delim=';')
@@ -2843,6 +2887,10 @@ function Save_Dq_Generator_Results!(
         # clamp is inactive, so the gap between the two shows when the AVR is limiting.
         ("dq_E_fd_unlim_pu", :E_fd_unlim_tf, :E_fd_unlim_tpf, 1.0,
             "Unsaturated Field Voltage E_fd_unlim", "E_fd_unlim (p.u.)", "dq_E_fd_unlim.svg"),
+        # SEXS lead-lag output feeding the gain-lag; covers only the generators that have
+        # the stage, and the file is absent entirely on the Ta_exc = Tb_exc = 0 bypass.
+        ("dq_E_LL_pu", :E_LL_tf, :E_LL_tpf, 1.0,
+            "AVR Lead-Lag Output E_LL", "E_LL (p.u.)", "dq_E_LL.svg"),
     )
     for (fname, key_tf, key_tpf, scale, title, ylab, svg_name) in dq_series
         traj = _extract_gen_time_trajectory(dyn_model_dict, key_tf, key_tpf; scale=scale)
@@ -3214,6 +3262,21 @@ function _write_gfm_voltage_debug!(io_path, dyn_model_dict, windows, gfm_gens, p
 end
 
 """
+COI angle/speed series for `key`, wherever the builder put it.
+
+It is a JuMP variable when the corridor references it and a plain `AffExpr` otherwise
+(see `_attach_δCOI!`). `JuMP.value` handles both, so the diagnostics do not care which
+form a run produced — only that they find it.
+"""
+function _coi_series(dyn_model_dict::OrderedDict{Symbol, Any}, key::Symbol)
+    series = get(dyn_model_dict[:vars], key, nothing)
+    series === nothing || return series
+    exprs = get(dyn_model_dict, :expressions, nothing)
+    exprs === nothing && return nothing
+    return get(exprs, key, nothing)
+end
+
+"""
 SG swing states with their δ–COI (and Δω–COI) corridor margins.
 
 The reference columns come first so a diff lines up; the package extras follow. `δ_util`
@@ -3232,13 +3295,18 @@ function _write_swing_debug!(io_path, dyn_model_dict, dyn_parameters_dict, DGEN_
     # angle_rel_COI.csv reports degrees, so compare ratios, not raw values.
     δ_tol = get(dyn_parameters_dict[:common], :δ_tol, (NaN, NaN))
     Δω_tol = get(meta, :Δω_tol, (NaN, NaN))
-    has_Δω_corridor = get(meta, :constrain_Δω_COI, false)
+    has_Δω_corridor = get(meta, :constrain_Δω, false)
+    # Reference machine under bound_style_δ = :highest_H / :ref_gen; `nothing` on the
+    # COI-referenced styles, where the δ_ref columns stay NaN.
+    δ_ref_gen = get(meta, :δ_ref_gen_resolved, nothing)
     for (period, sfx, tvec) in windows
         δ_w = _dbg_vars(dyn_model_dict, "δ", sfx)
         Δω_w = _dbg_vars(dyn_model_dict, "Δω", sfx)
         Pe_w = _dbg_vars(dyn_model_dict, "Pe", sfx)
         Pm_w = _dbg_vars(dyn_model_dict, "Pm", sfx)
-        δCOI = get(dyn_model_dict[:vars], Symbol("δCOI_", sfx), nothing)
+        # δCOI is a variable only when the δ corridor references it; a machine-referenced
+        # run keeps it as an unconstrained expression so this column stays populated.
+        δCOI = _coi_series(dyn_model_dict, Symbol("δCOI_", sfx))
         ΔωCOI = get(dyn_model_dict[:vars], Symbol("ΔωCOI_", sfx), nothing)
         P_m0 = get(dyn_model_dict[:vars], :P_m, nothing)
         for gen in sg_gens
@@ -3259,6 +3327,11 @@ function _write_swing_debug!(io_path, dyn_model_dict, dyn_parameters_dict, DGEN_
                 ω_coi = ΔωCOI === nothing || !haskey(ΔωCOI, t) ? NaN :
                     Float64(JuMP.value(ΔωCOI[t]))
                 Δω_rel = Δω - ω_coi
+                # Angle relative to the reference machine — the quantity the :highest_H /
+                # :ref_gen corridors actually bound, and the reference's own row is 0.
+                δ_ref_val = δ_ref_gen === nothing ? NaN :
+                    _dbg_val(δ_w, δ_ref_gen, t)
+                δ_rel_ref = δ - δ_ref_val
                 push!(rows, (
                     period = period, gen = gen, t_idx = t, t_s = tvec[t],
                     H = H, D = D, Δt = Δt, a = a,
@@ -3287,6 +3360,24 @@ function _write_swing_debug!(io_path, dyn_model_dict, dyn_parameters_dict, DGEN_
                         Symbol("ineq_const_Δω_COI_", sfx, "_lower"), gen, t),
                     dual_Δω_COI_upper = _dbg_dual(dyn_model_dict, :ineq_const,
                         Symbol("ineq_const_Δω_COI_", sfx, "_upper"), gen, t),
+                    # --- machine-referenced δ corridor and absolute Δω corridor ---------
+                    # NaN unless the matching style built them; the columns are always
+                    # present so runs under different styles stay diff-able side by side.
+                    δ_ref_gen = δ_ref_gen === nothing ? 0 : δ_ref_gen,
+                    δ_rel_ref = δ_rel_ref,
+                    δ_ref_margin_lo = δ_rel_ref - δ_tol[1],
+                    δ_ref_margin_hi = δ_tol[2] - δ_rel_ref,
+                    δ_ref_util = _corridor_utilisation(δ_rel_ref, δ_tol),
+                    dual_δ_ref_lower = _dbg_dual(dyn_model_dict, :ineq_const,
+                        Symbol("ineq_const_δ_ref_", sfx, "_lower"), gen, t),
+                    dual_δ_ref_upper = _dbg_dual(dyn_model_dict, :ineq_const,
+                        Symbol("ineq_const_δ_ref_", sfx, "_upper"), gen, t),
+                    Δω_abs_margin_lo = has_Δω_corridor ? Δω - Δω_tol[1] : NaN,
+                    Δω_abs_margin_hi = has_Δω_corridor ? Δω_tol[2] - Δω : NaN,
+                    dual_Δω_abs_lower = _dbg_dual(dyn_model_dict, :ineq_const,
+                        Symbol("ineq_const_Δω_abs_", sfx, "_lower"), gen, t),
+                    dual_Δω_abs_upper = _dbg_dual(dyn_model_dict, :ineq_const,
+                        Symbol("ineq_const_Δω_abs_", sfx, "_upper"), gen, t),
                 ))
             end
         end

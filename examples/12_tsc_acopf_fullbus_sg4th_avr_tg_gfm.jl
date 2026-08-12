@@ -272,8 +272,9 @@ const fault_cfg = FaultConfig(
 )
 
 # ── Dynamic physics and network form (DynModelConfig) ─────────────────────────
-# allow_gfm=true loads gfm_dynamic_data.csv, partitions SG/GFM by id, and keeps
-# COI + the δ/Δω corridors SG-only while KCL still injects every active unit.
+# allow_gfm=true loads gfm_dynamic_data.csv, partitions SG/GFM by id, and keeps the
+# inertia-weighted corridors (COI, :coi_box on either knob) SG-only. The machine-referenced
+# δ styles and bound_style_Δω=:abs bound the converters too; KCL always injects every unit.
 const dyn_model_cfg = DynModelConfig(
     gen_order               = DQ_4TH,        # required by allow_gfm; also what the AVR needs
     network_form            = FULL_BUS,      # required by allow_gfm; converters inject through nodal KCL
@@ -302,9 +303,9 @@ const dyn_model_cfg = DynModelConfig(
     # (Z, I, P) splits — real physics on FULL_BUS. (1,0,0) = constant impedance.
     zip_load_p              = (1.0, 0.0, 0.0),  # active demand: 100 % constant impedance (∝ V²), 0 % current, 0 % power
     zip_load_q              = (1.0, 0.0, 0.0),  # reactive demand: same split, set independently of the active one
-    bound_style             = :coi_box,      # required by DQ_4TH: the stability limit is a direct corridor around the COI
-    constrain_Δω_COI        = false,         # false = no Δω corridor; like δ–COI it would cover SG units only
-    Δω_tol_pu               = 0.5,           # half-width of that Δω corridor [pu]; read only when constrain_Δω_COI = true
+    bound_style_δ             = :coi_box,      # required by DQ_4TH: the stability limit is a direct corridor around the COI
+    constrain_Δω        = false,         # false = no Δω corridor; like δ–COI it would cover SG units only
+    Δω_tol_pu               = 0.5,           # half-width of that Δω corridor [pu]; read only when constrain_Δω = true
     Δω_tol_pu_lower         = nothing,       # nothing = reuse Δω_tol_pu below the COI
     Δω_tol_pu_upper         = nothing,       # nothing = reuse Δω_tol_pu above the COI
     fault                   = fault_cfg,     # the FaultConfig instance built above

@@ -59,7 +59,7 @@ const CLASSICAL_KRON_DUAL_SPECS = DualRegistryEntry[
     DualRegistryEntry(:dual_δCOI, :eq_const, :eq_const_δCOI_tf, :eq_const_δCOI_tpf,
         TIME_INDEXED_MERGE, "dual_delta_COI.csv", :dual_δCOI_xlsx),
     DualRegistryEntry(:dual_ΔωCOI, :eq_const, :eq_const_ΔωCOI_tf, :eq_const_ΔωCOI_tpf,
-        TIME_INDEXED_MERGE, "dual_Delta_Omega_COI.csv", :dual_ΔωCOI_xlsx),  # constrain_Δω_COI
+        TIME_INDEXED_MERGE, "dual_Delta_Omega_COI.csv", :dual_ΔωCOI_xlsx),  # constrain_Δω
 
     # --- swing / electrical power ODE discretization (equality, per generator) --
     DualRegistryEntry(:dual_Pe, :eq_const, :eq_const_Pe_tf, :eq_const_Pe_tpf,
@@ -82,6 +82,30 @@ const CLASSICAL_KRON_DUAL_SPECS = DualRegistryEntry[
     DualRegistryEntry(:dual_Δω_COI_upper, :ineq_const, :ineq_const_Δω_COI_tf_upper,
         :ineq_const_Δω_COI_tpf_upper, PER_GEN_TIME_MERGE,
         "dual_Delta_Omega_COI_upper.csv", :dual_Δω_COI_upper_xlsx),
+
+    # --- transient-stability bounds w.r.t. a reference machine ------------------
+    # Built instead of the COI rows above when bound_style_δ is :highest_H or :ref_gen.
+    # Separate export names on purpose: the shadow price of "stay within δ_tol of the COI"
+    # and of "stay within δ_tol of machine k" are different quantities, and a study that
+    # compares the two conventions must be able to tell the columns apart. Only one of the
+    # two families exists in any given run, so nothing is exported twice.
+    DualRegistryEntry(:dual_δ_ref_lower, :ineq_const, :ineq_const_δ_ref_tf_lower,
+        :ineq_const_δ_ref_tpf_lower, PER_GEN_TIME_MERGE,
+        "dual_delta_ref_lower.csv", :dual_δ_ref_lower_xlsx),
+    DualRegistryEntry(:dual_δ_ref_upper, :ineq_const, :ineq_const_δ_ref_tf_upper,
+        :ineq_const_δ_ref_tpf_upper, PER_GEN_TIME_MERGE,
+        "dual_delta_ref_upper.csv", :dual_δ_ref_upper_xlsx),
+
+    # --- absolute speed corridor (bound_style_Δω = :abs) ------------------------
+    # Priced against a fixed band rather than against the COI, so this dual is the
+    # shadow price of the fleet's common-mode frequency excursion as well as of the
+    # spread between machines. Kept apart from the COI columns for the same reason.
+    DualRegistryEntry(:dual_Δω_abs_lower, :ineq_const, :ineq_const_Δω_abs_tf_lower,
+        :ineq_const_Δω_abs_tpf_lower, PER_GEN_TIME_MERGE,
+        "dual_Delta_Omega_abs_lower.csv", :dual_Δω_abs_lower_xlsx),
+    DualRegistryEntry(:dual_Δω_abs_upper, :ineq_const, :ineq_const_Δω_abs_tf_upper,
+        :ineq_const_Δω_abs_tpf_upper, PER_GEN_TIME_MERGE,
+        "dual_Delta_Omega_abs_upper.csv", :dual_Δω_abs_upper_xlsx),
 
     # --- explicit variable bound duals (inequality, pre-fault) ------------------
     DualRegistryEntry(:dual_LB_E, :ineq_const, :ineq_const_E_lower, nothing,
@@ -213,6 +237,13 @@ const DQ_4TH_FULL_BUS_DUAL_SPECS = DualRegistryEntry[
         PER_GEN_TIME_MERGE, "dual_Eq.csv", :dual_Eq_xlsx),
     DualRegistryEntry(:dual_Vref_init, :eq_const, :eq_const_Efd_init, nothing,
         GEN_INDEXED, "dual_Vref_init.csv", :dual_Vref_init_xlsx),
+    # SEXS lead-lag stage — absent whenever every generator sets Ta_exc = Tb_exc = 0
+    # (the pass-through bypass in `_avr_leadlag_gens`), so the presence filter drops it.
+    # Rows are normalized to a unit E_LL[t] coefficient, which keeps these duals
+    # comparable across machines with different Tb_exc.
+    DualRegistryEntry(:dual_avr_leadlag, :eq_const,
+        :eq_const_avr_leadlag_tf, :eq_const_avr_leadlag_tpf,
+        PER_GEN_TIME_MERGE, "dual_avr_leadlag.csv", :dual_avr_leadlag_xlsx),
     DualRegistryEntry(:dual_avr_E_fd, :eq_const, :eq_const_E_fd_unlim_tf, :eq_const_E_fd_unlim_tpf,
         PER_GEN_TIME_MERGE, "dual_avr_E_fd.csv", :dual_avr_E_fd_xlsx),
     DualRegistryEntry(:dual_avr_E_fd_sat, :eq_const, :eq_const_E_fd_tf, :eq_const_E_fd_tpf,

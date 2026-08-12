@@ -96,7 +96,7 @@ TSCOPF discretises with the trapezoidal rule on each time window (fault `*_tf`, 
     ```
 
 !!! info "Assumption"
-    Mechanical power $P_{m,g}$ is fixed at the dispatch $P_g$ when `mech_power_mode = USE_PG` (Kron default). With `USE_PM`, $P_m$ is an explicit variable (requires `bound_style = :coi_box` on FULL_BUS paths).
+    Mechanical power $P_{m,g}$ is fixed at the dispatch $P_g$ when `mech_power_mode = USE_PG` (Kron default). With `USE_PM`, $P_m$ is an explicit variable (requires `bound_style_δ = :coi_box` on FULL_BUS paths).
 
 ### Electrical power during the transient (nonlinear Kron)
 
@@ -127,7 +127,7 @@ $G^{\mathrm{red}}$ and $B^{\mathrm{red}}$ are rebuilt when the network topology 
 
     $\mathcal{G}_{\mathrm{act}}$ is the active generator set for the window (all machines on SC; survivors only after GL gen-trip). See [5. Swing dynamics](05_swing_dynamics.md#centre-of-inertia).
 
-Rotor angles are limited relative to COI, not to an absolute reference. With `bound_style = :coi_box`, the direct inequalities are:
+Rotor angles are limited relative to COI, not to an absolute reference. With `bound_style_δ = :coi_box`, the direct inequalities are:
 
 !!! note "Model 6.7 (COI-referenced angle corridor)"
     ```math
@@ -232,7 +232,7 @@ Initial link: $P_{g(k)} - (\delta_g^0 - \theta_{k(g)})/x'_g = 0$. COI and $\eqre
 | $\eqref{eq:trap-delta}$–$\eqref{eq:trap-swing}$ | `functions_4_TS_kron_eqconst.jl` | always built in tf/tpf windows |
 | $\eqref{eq:pe-kron}$ | `eq_const_tsred_Pe_generic!` | always built (Kron) |
 | $\eqref{eq:coi}$ | `eq_const_kron_COI_generic!` | always built |
-| $\eqref{eq:delta-coi-box}$ | `functions_4_TS_kron_ineqconst.jl` | `ineq_δ_COI_tf_*`, `ineq_δ_COI_tpf_*`; `bound_style` |
+| $\eqref{eq:delta-coi-box}$ | `functions_4_TS_kron_ineqconst.jl` | `ineq_δ_COI_tf_*`, `ineq_δ_COI_tpf_*`; `bound_style_δ` |
 | FULL_BUS nodal KCL | `functions_2_build_TS_model_w_FullBus.jl` | `network_form = FULL_BUS` |
 | $\eqref{eq:pe-linear}$ | `functions_2_build_TS_model_w_Kron_Linear.jl` | `dispatch.type_model = "DCOPF"` |
 | SC / GL topology | `FaultConfig.jl`, fault builders | `dyn_model.fault` |

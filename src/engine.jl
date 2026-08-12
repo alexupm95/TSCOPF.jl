@@ -139,6 +139,32 @@ function reconfigure(cfg::RunConfig; kwargs...)
 end
 
 """
+    validate_δCOI_bound_request!(tc::TransientConfig)
+
+Reject `TsBuilderConfig.bound_δCOI_tf` / `bound_δCOI_tpf` on a run whose δ corridor does
+not reference the centre of inertia.
+
+Those toggles put explicit bounds on the `δCOI_*` **variable**, and a machine-referenced
+run (or one with `constrain_δ=false`) builds the COI as an expression instead — there is
+no variable to bound. The attach helpers skip absent variables silently, so without this
+check the request would simply evaporate.
+"""
+function validate_δCOI_bound_request!(tc::TransientConfig)
+    dyn = tc.dyn_model
+    coi_referenced = dyn.constrain_δ &&
+        dyn.bound_style_δ ∈ (:coi_box, :swing_propagated)
+    coi_referenced && return nothing
+    for field in (:bound_δCOI_tf, :bound_δCOI_tpf)
+        getfield(tc.builder, field) && throw(ArgumentError(
+            "$field=true needs a δ_COI variable, which only exists when the δ corridor " *
+            "references the COI (constrain_δ=true with bound_style_δ ∈ (:coi_box, " *
+            ":swing_propagated)). This run has constrain_δ=$(dyn.constrain_δ), " *
+            "bound_style_δ=:$(dyn.bound_style_δ)."))
+    end
+    return nothing
+end
+
+"""
     validate_run_config!(cfg::RunConfig)
 
 Fail fast on incoherent run configuration (avenue split, dispatch, transient).
@@ -150,6 +176,7 @@ function validate_run_config!(cfg::RunConfig)
             throw(ArgumentError("trans_stab=true requires transient::TransientConfig."))
         validate_transient_config!(cfg.transient)
         validate_dyn_config!(cfg)
+        validate_δCOI_bound_request!(cfg.transient)
     elseif cfg.transient !== nothing
         throw(ArgumentError("trans_stab=false requires transient=nothing."))
     end
@@ -238,8 +265,8 @@ function validate_dyn_config!(cfg::RunConfig)
         # Milestone 1/2/3: machine core; optional AVR and governor.
         dyn.mech_power_mode != USE_PM && throw(ArgumentError(
             "DQ_4TH requires mech_power_mode=USE_PM."))
-        dyn.bound_style != :coi_box && throw(ArgumentError(
-            "DQ_4TH requires bound_style=:coi_box."))
+        dyn.bound_style_δ == :swing_propagated && throw(ArgumentError(
+            "DQ_4TH requires a box-form bound_style_δ (:coi_box), not :swing_propagated."))
     end
 
     if dyn.include_governor && dyn.mech_power_mode != USE_PM
@@ -258,8 +285,38 @@ function validate_dyn_config!(cfg::RunConfig)
             "TSC-DCOPF with DQ_4TH is not implemented (no linearised dq formulation yet)."))
     end
 
-    if dyn.bound_style ∉ (:swing_propagated, :coi_box)
-        throw(ArgumentError("bound_style must be :swing_propagated or :coi_box."))
+    # --- stability corridors: two independent knobs, at least one of them on -------
+    # The rotor-angle and speed corridors are what makes a run transient-stability
+    # *constrained*; with both off the TS block is pure simulation bolted onto an OPF,
+    # which is never what the caller meant.
+    if dyn.bound_style_δ ∉ (:swing_propagated, :coi_box, :highest_H, :ref_gen)
+        throw(ArgumentError(
+            "bound_style_δ must be :swing_propagated, :coi_box, :highest_H or :ref_gen " *
+            "(got $(dyn.bound_style_δ))."))
+    end
+
+    # The id itself is checked against the system data in `validate_δ_reference!` — here we
+    # only catch the two errors that need no DataFrames.
+    if dyn.bound_style_δ == :ref_gen
+        dyn.δ_ref_gen_id === nothing && throw(ArgumentError(
+            "bound_style_δ=:ref_gen requires δ_ref_gen_id (a generator id from gen_dynamic_data)."))
+        dyn.δ_ref_gen_id > 0 || throw(ArgumentError(
+            "δ_ref_gen_id must be a positive generator id (got $(dyn.δ_ref_gen_id))."))
+    elseif dyn.δ_ref_gen_id !== nothing
+        @warn "δ_ref_gen_id=$(dyn.δ_ref_gen_id) is ignored when " *
+              "bound_style_δ=:$(dyn.bound_style_δ) (it only selects the reference machine " *
+              "for :ref_gen)."
+    end
+
+    if dyn.bound_style_Δω ∉ (:coi_box, :abs)
+        throw(ArgumentError(
+            "bound_style_Δω must be :coi_box or :abs (got $(dyn.bound_style_Δω))."))
+    end
+
+    if cfg.trans_stab && !dyn.constrain_δ && !dyn.constrain_Δω
+        throw(ArgumentError(
+            "A transient-stability run needs at least one corridor: set constrain_δ=true " *
+            "(rotor angle) or constrain_Δω=true (speed deviation)."))
     end
 
     if dyn.ode_first_step ∉ (:trapezoidal, :backward_euler)
@@ -291,9 +348,11 @@ function validate_dyn_config!(cfg::RunConfig)
               "(it only governs the GFM measurement filters and the Q–V PI integrator)."
     end
 
-    if dyn.mech_power_mode == USE_PM && dyn.bound_style != :coi_box
+    if dyn.mech_power_mode == USE_PM && dyn.bound_style_δ == :swing_propagated
         throw(ArgumentError(
-            "USE_PM requires bound_style=:coi_box (swing_propagated is invalid with explicit P_m)."))
+            "USE_PM requires a box-form bound_style_δ (:coi_box); :swing_propagated " *
+            "substitutes the dispatch power into the angle band, which is invalid with " *
+            "an explicit P_m."))
     end
 
     if cfg.trans_stab && type_model == "DCOPF" && dyn.network_form == FULL_BUS
@@ -301,10 +360,10 @@ function validate_dyn_config!(cfg::RunConfig)
             "TSC-DCOPF with FULL_BUS is not implemented yet (Phase 3 is TSC-ACOPF only)."))
     end
 
-    if dyn.constrain_Δω_COI
+    if dyn.constrain_Δω
         dyn.Δω_tol_pu > 0.0 ||
-            throw(ArgumentError("constrain_Δω_COI=true requires Δω_tol_pu > 0."))
-        # Overrides are positive magnitudes below/above COI (see Δω_tol_tuple).
+            throw(ArgumentError("constrain_Δω=true requires Δω_tol_pu > 0."))
+        # Overrides are positive magnitudes below/above the reference (see Δω_tol_tuple).
         for (name, v) in ((:Δω_tol_pu_lower, dyn.Δω_tol_pu_lower),
                           (:Δω_tol_pu_upper, dyn.Δω_tol_pu_upper))
             v === nothing || v > 0.0 ||
@@ -325,11 +384,88 @@ function validate_dyn_config!(cfg::RunConfig)
 end
 
 """
+    validate_δ_reference!(cfg, DGEN, DGEN_DYN, DGFM=nothing)
+
+Check the machine-referenced δ corridor (`bound_style_δ = :highest_H | :ref_gen`)
+against the actual system data.
+
+`validate_dyn_config!` cannot do this: whether a generator id is in service, tripped by
+the disturbance, a GFM unit, or carries inertia is a property of the CSVs, not of the
+config. Run it from `run_case!` **before** the mandatory FULL_BUS ACOPF warm start —
+otherwise a typo in `δ_ref_gen_id` costs a full NLP solve before it is caught.
+
+The corridor is built over the units that survive the disturbance, so the reference is
+selected from that set: `:highest_H` can never land on a unit the run is about to trip.
+
+Grid-forming converters are corridor *members* here — the machine-referenced styles bound
+their angle like any other — but they are not `:highest_H` *candidates*, because that style
+ranks by inertia and `DGFM` carries none. A converter becomes the reference only through an
+explicit `:ref_gen`, and the `nrow(DGEN_DYN)` range check and the `H > 0` check then do not
+apply to it: `DGEN_DYN` holds machine rows only.
+"""
+function validate_δ_reference!(
+    cfg::RunConfig,
+    DGEN::DataFrame,
+    DGEN_DYN::Union{DataFrame, Nothing},
+    DGFM::Union{DataFrame, Nothing}=nothing,
+)
+    cfg.trans_stab || return nothing
+    cfg.transient === nothing && return nothing
+    dyn = cfg.transient.dyn_model
+    dyn.constrain_δ || return nothing
+    dyn.bound_style_δ ∈ (:highest_H, :ref_gen) || return nothing
+    DGEN_DYN === nothing && throw(ArgumentError(
+        "bound_style_δ=:$(dyn.bound_style_δ) needs machine dynamic data (DGEN_DYN)."))
+
+    # Units the corridor will actually span: in service and not tripped, converters included.
+    gfm_ids = DGFM === nothing ? Set{Int}() : gfm_id_set(DGFM)
+    tripped = dyn.fault.fault_type == GL ? Set{Int}(dyn.fault.gl_gen_ids) : Set{Int}()
+    survivors = [g for g in findall(x -> x == 1, DGEN.g_status) if g ∉ tripped]
+    # The narrower set `:highest_H` ranks over, and the only one `DGEN_DYN.H` may be indexed by.
+    sg_survivors = [g for g in survivors if g ∉ gfm_ids]
+
+    length(survivors) ≥ 2 || throw(ArgumentError(
+        "bound_style_δ=:$(dyn.bound_style_δ) needs at least two units " *
+        "left after the disturbance (found $(length(survivors)): $(survivors)). The " *
+        "reference carries no row of its own, so the corridor would be empty."))
+
+    if dyn.bound_style_δ == :ref_gen
+        ref = dyn.δ_ref_gen_id
+        # A converter is a legal reference, but it has no row in the machine CSV, so the
+        # id-range and inertia checks below are for synchronous machines only.
+        if ref ∉ gfm_ids
+            ref ≤ nrow(DGEN_DYN) || throw(ArgumentError(
+                "δ_ref_gen_id=$ref is not a generator id (gen_dynamic_data has " *
+                "$(nrow(DGEN_DYN)) rows)."))
+        end
+        ref ∈ tripped && throw(ArgumentError(
+            "δ_ref_gen_id=$ref is tripped by the GL disturbance (gl_gen_ids=" *
+            "$(dyn.fault.gl_gen_ids)); the reference must stay synchronised."))
+        ref ∈ survivors || throw(ArgumentError(
+            "δ_ref_gen_id=$ref is out of service (DGEN.g_status = 0)."))
+        if ref ∉ gfm_ids
+            Float64(DGEN_DYN.H[ref]) > 0.0 || throw(ArgumentError(
+                "δ_ref_gen_id=$ref has H = 0 in gen_dynamic_data; pick a machine with inertia."))
+        end
+    else
+        any(g -> Float64(DGEN_DYN.H[g]) > 0.0, sg_survivors) || throw(ArgumentError(
+            "bound_style_δ=:highest_H found no surviving machine with H > 0 " *
+            "(candidates: $(sg_survivors)). The reference is ranked by inertia and so is " *
+            "always a synchronous machine, even when converters are bounded by the corridor."))
+    end
+
+    return nothing
+end
+
+"""
     validate_dyn_data!(cfg::RunConfig, DGEN_DYN)
 
 Fail fast when the machine CSV named by `TransientConfig.gen_dynamic_filename` does
 not carry the columns the selected `DynModelConfig` needs — `R, T1, T2, T3` under
-`include_governor`, `T_exc, K_exc` under `include_avr`, the dq set under `DQ_4TH`.
+`include_governor`, `T_exc, K_exc, Ta_exc, Tb_exc` under `include_avr`, the dq set
+under `DQ_4TH` — or carries AVR parameters that have no realization: a non-positive
+`T_exc`/`K_exc`, or lead-lag time constants that do not describe a proper block
+(see [`validate_avr_data!`](@ref)).
 
 Separate from [`validate_dyn_config!`](@ref) because that one is config-only and
 runs before any data is read; this needs `DGEN_DYN`, so it runs from `run_case!`
@@ -355,14 +491,70 @@ function validate_dyn_data!(cfg::RunConfig, DGEN_DYN::Union{DataFrame, Nothing})
         "(expected $fname). Build the SystemData with load_system on a TSC RunConfig."))
 
     missing_cols = missing_dyn_columns(dyn, DGEN_DYN)
-    isempty(missing_cols) && return nothing
+    if !isempty(missing_cols)
+        cols = join(string.(missing_cols), ", ")
+        why = join(dyn_column_reasons(missing_cols), ", ")
+        throw(ArgumentError(
+            "$fname is missing machine data required by the selected dynamic model: " *
+            "$cols (required by $why). Columns must be present and finite for every " *
+            "generator row."))
+    end
 
-    cols = join(string.(missing_cols), ", ")
-    why = join(dyn_column_reasons(missing_cols), ", ")
-    throw(ArgumentError(
-        "$fname is missing machine data required by the selected dynamic model: " *
-        "$cols (required by $why). Columns must be present and finite for every " *
-        "generator row."))
+    dyn.include_avr && validate_avr_data!(DGEN_DYN, fname)
+    return nothing
+end
+
+"""
+    validate_avr_data!(DGEN_DYN, fname)
+
+Reject SEXS exciter parameters that the AVR builders cannot represent.
+
+Gain-lag stage, per generator row:
+
+  * `T_exc > 0` and `K_exc > 0`. Both are divided by — `T_exc` in the exciter row's
+    `c = Δt/(2·T_exc)` and its backward-Euler `Δt/T_exc`, `K_exc` in the lead-lag
+    warm start — so a zero reaches the model as an infinite coefficient. `K_exc = 0`
+    is the quieter of the two and the worse: the pre-fault link `E_fd = K_exc·(V_ref − V)`
+    degenerates to `E_fd = 0` and the exciter loses its input, which converges to
+    something meaningless rather than failing.
+
+Lead-lag stage, per generator row:
+
+  * `Ta_exc ≥ 0` and `Tb_exc ≥ 0` — negative time constants are not a model.
+  * `Tb_exc == 0` requires `Ta_exc == 0`. With both zero the block is the exact
+    pass-through `E_LL ≡ V_ref − V` and is skipped outright; with only `Tb_exc` zero
+    it is a bare `1 + Ta_exc·s` differentiator, improper, whose discretization has
+    coefficients that blow up as `Δt → 0` and whose alternating mode is genuinely
+    excited. That second case used to be caught by the old `Tb_exc > 0` build gate;
+    now that the bypass keys on *both* being zero, nothing else rejects it.
+
+Called from [`validate_dyn_data!`](@ref) only when `include_avr = true`, after the
+column-presence check has guaranteed all four columns exist and are finite — hence
+no `isnan` guard on the comparisons below. Keeping it behind that gate is what lets
+a non-AVR run carry `NaN` in these columns, which the DQ-only fixtures rely on.
+"""
+function validate_avr_data!(DGEN_DYN::DataFrame, fname::String)
+    for i in 1:nrow(DGEN_DYN)
+        T_exc, K_exc = DGEN_DYN.T_exc[i], DGEN_DYN.K_exc[i]
+        (T_exc <= 0.0 || K_exc <= 0.0) && throw(ArgumentError(
+            "$fname row $i (bus $(DGEN_DYN.bus[i])) has a non-positive AVR gain-lag " *
+            "parameter (T_exc=$T_exc, K_exc=$K_exc). Both must be > 0: the exciter row " *
+            "divides by T_exc, and K_exc = 0 leaves the field voltage pinned at zero " *
+            "with no voltage feedback."))
+
+        Ta, Tb = DGEN_DYN.Ta_exc[i], DGEN_DYN.Tb_exc[i]
+        (Ta < 0.0 || Tb < 0.0) && throw(ArgumentError(
+            "$fname row $i (bus $(DGEN_DYN.bus[i])) has a negative AVR lead-lag time " *
+            "constant (Ta_exc=$Ta, Tb_exc=$Tb). Both must be ≥ 0."))
+        if iszero(Tb) && !iszero(Ta)
+            throw(ArgumentError(
+                "$fname row $i (bus $(DGEN_DYN.bus[i])) sets Tb_exc=0 with Ta_exc=$Ta, " *
+                "which is a pure differentiator (1 + Ta_exc·s) and has no state-space " *
+                "realization. Use Ta_exc=Tb_exc=0 to bypass the lead-lag stage, or " *
+                "Tb_exc > 0 to model it."))
+        end
+    end
+    return nothing
 end
 
 # ==============================================================================
@@ -675,6 +867,9 @@ function run_case!(cfg::RunConfig, sys::SystemData,
         # Machine data must satisfy the selected dyn model before anything is built:
         # a missing governor/AVR/dq column reaches the builders as NaN, not as an error.
         validate_dyn_data!(cfg, sys.DGEN_DYN)
+        # A machine-referenced δ corridor names a generator that must survive the
+        # disturbance — checked here so a bad id fails before the warm-start ACOPF solve.
+        validate_δ_reference!(cfg, sys.DGEN, sys.DGEN_DYN, sys.DGFM)
     end
 
     # Resolve the optimization-matrix export request. Forced false (with a warning)

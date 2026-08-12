@@ -155,7 +155,7 @@ Exported matrices land in `RESULTS/.../Bus_Matrices/` when `trans_stab = true`.
             dyn_model = DynModelConfig(
                 network_form = FULL_BUS,
                 mech_power_mode = USE_PM,
-                bound_style = :coi_box,
+                bound_style_δ = :coi_box,
                 zip_load_p = (1.0, 0.0, 0.0),  # (Z, I, P) — active demand, constant impedance
                 zip_load_q = (1.0, 0.0, 0.0),  # (Z, I, P) — reactive demand, constant impedance
                 fault = FaultConfig(contingency_id = 2),

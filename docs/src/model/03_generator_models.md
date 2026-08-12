@@ -152,7 +152,7 @@ Unlike the classical FULL_BUS map (active power as a function of $E'$, $V$, $\de
 Pre-fault, `eq_const_dq_init_steady_state!` pins the machine to the solved ACOPF point — bus voltage, angle, and dispatch $P_g$, $Q_g$. Warm starts use `dq_machine_warmstart` to project complex terminal voltage and current into field voltage, rotor angle, emfs, and $dq$ currents.
 
 !!! info "Assumption"
-    `DQ_4TH` requires `network_form = FULL_BUS`, `mech_power_mode = USE_PM`, and `bound_style = :coi_box`. TSC-DCOPF and Kron reduction are **not** implemented for this order.
+    `DQ_4TH` requires `network_form = FULL_BUS`, `mech_power_mode = USE_PM`, and `bound_style_δ = :coi_box`. TSC-DCOPF and Kron reduction are **not** implemented for this order.
 
 ---
 
@@ -166,7 +166,7 @@ Pre-fault, `eq_const_dq_init_steady_state!` pins the machine to the solved ACOPF
 | `Xd`, `Xq` | — | yes |
 | `Td`, `Tq` | — | yes ($T'_{d0}$, $T'_{q0}$) |
 | `Ra` | — | yes ($r_a$) |
-| `T_exc`, `K_exc` | — | AVR only |
+| `T_exc`, `K_exc`, `Ta_exc`, `Tb_exc` | — | AVR only (`Ta_exc=Tb_exc=0` bypasses lead-lag) |
 | `R`, `T1`–`T3` | — | governor only |
 
 ---
@@ -184,7 +184,7 @@ Pre-fault, `eq_const_dq_init_steady_state!` pins the machine to the solved ACOPF
                 gen_order = DQ_4TH,
                 network_form = FULL_BUS,
                 mech_power_mode = USE_PM,
-                bound_style = :coi_box,
+                bound_style_δ = :coi_box,
                 gen_dynamic_filename = "gen_dynamic_data_full.csv",
                 zip_load_p = (1.0, 0.0, 0.0),  # (Z, I, P) — active demand, constant impedance
                 zip_load_q = (1.0, 0.0, 0.0),  # (Z, I, P) — reactive demand, constant impedance

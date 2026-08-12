@@ -2,7 +2,7 @@
 
 Chapters 3–6 treat the field voltage $E_{fd,g}$ and the mechanical power $P_{m,g}$ as constants held at their pre-fault values. That is the standard first-swing assumption, and it is what TSCOPF does by default. Two optional control layers relax it:
 
-- **AVR** (`DynModelConfig.include_avr = true`) — a first-order exciter that moves $E_{fd,g}$ in response to terminal-voltage error. Requires `gen_order = DQ_4TH`, because the classical model has no field-voltage input to act on.
+- **AVR** (`DynModelConfig.include_avr = true`) — a SEXS exciter (optional lead-lag plus gain-lag) that moves $E_{fd,g}$ in response to terminal-voltage error. Requires `gen_order = DQ_4TH`, because the classical model has no field-voltage input to act on.
 - **TGOV1 governor** (`DynModelConfig.include_governor = true`) — valve plus turbine lag that replaces the constant $P_{m,g}$ with a trajectory $P_{m,g}^t$ driven by speed deviation. Available on `FULL_BUS`, classical **and** `DQ_4TH`, and requires `mech_power_mode = USE_PM`.
 
 Both layers add states per generator per time step, so they roughly double the transient block of the NLP. Both also add their own dual families, which is the point for the economic analysis in [7. Duals, KKT, and the economics](07_duals_economics.md): with controls active, the shadow price of a stability corridor is partly a price on *control effort*, not only on dispatch.
@@ -11,8 +11,10 @@ Both layers add states per generator per time step, so they roughly double the t
 |---|---|---|
 | $E_{fd,g}$ | Saturated field voltage entering the $E'_q$ emf ODE | state |
 | $\tilde{E}_{fd,g}$ | Pre-saturation exciter state (`E_fd_unlim` in code) | state |
+| $E_{\mathrm{LL},g}$ | Lead-lag output feeding the gain-lag (`E_LL` in code) | state |
 | $V_{\mathrm{ref},g}$ | Exciter voltage set-point, constant over the run | variable |
 | $K_{\mathrm{exc},g}$, $T_{\mathrm{exc},g}$ | Exciter gain and time constant | `K_exc`, `T_exc` |
+| $T_{a,g}$, $T_{b,g}$ | Lead-lag lead and lag time constants | `Ta_exc`, `Tb_exc` |
 | $P_{v,g}$ | Valve (gate) position, in power units | state |
 | $\tilde{P}_{v,g}$ | Pre-saturation valve state (`Pv_raw` in code) | state |
 | $P_{\mathrm{ref},g}$ | Governor set-point, **$R$-scaled** — see Model 8.6 | variable |
@@ -20,7 +22,7 @@ Both layers add states per generator per time step, so they roughly double the t
 | $T_{1,g}, T_{2,g}, T_{3,g}$ | Valve lag, turbine lead, turbine lag | `T1`, `T2`, `T3` |
 | $\Delta\omega_g$ | Per-unit speed deviation | state |
 
-Control parameters live in the SG machine file, which must be the extended one — `TransientConfig.gen_dynamic_filename = "gen_dynamic_data_full.csv"`. `required_dyn_column_names` adds `T_exc, K_exc` when `include_avr` is on and `R, T1, T2, T3` when `include_governor` is on; a missing column fails before any model is built.
+Control parameters live in the SG machine file, which must be the extended one — `TransientConfig.gen_dynamic_filename = "gen_dynamic_data_full.csv"`. `required_dyn_column_names` adds `T_exc, K_exc, Ta_exc, Tb_exc` when `include_avr` is on and `R, T1, T2, T3` when `include_governor` is on; a missing column fails before any model is built. `Ta_exc = Tb_exc = 0` is legal and skips the lead-lag stage; `Tb_exc = 0` with `Ta_exc > 0` is rejected.
 
 ---
 
@@ -28,22 +30,37 @@ Control parameters live in the SG machine file, which must be the extended one �
 
 ![IEEE-type AVR block diagram](../assets/models/avrblock.png)
 
-*Reference AVR block. **TSCOPF implements the right-hand block only.** There is no lead-lag stage — the code path is equivalent to $T_A = T_B$, so the transfer function collapses to $K/(1+T_E s)$, mapping to $K_{\mathrm{exc}}/(1+T_{\mathrm{exc}} s)$ with both parameters read per generator from `gen_dynamic_data_full.csv`. The summing junction is exactly the code's $V_{\mathrm{ref}} - V$ with $V$ the generator-bus voltage magnitude, and $E_{\mathrm{MIN}}/E_{\mathrm{MAX}}$ are **not** CSV columns: they come from `TsBoundLimitsConfig.E_min_pu` / `E_max_pu` (see the note on that overload below).*
+*Reference AVR block (SEXS). **TSCOPF implements the full chain:** the lead-lag $(1+s T_A)/(1+s T_B)$ followed by the gain-lag $K/(1+T_E s)$, mapping to $(1+s\,T_{a})/(1+s\,T_{b})$ then $K_{\mathrm{exc}}/(1+T_{\mathrm{exc}} s)$ with all four parameters read per generator from `gen_dynamic_data_full.csv`. Setting $T_a = T_b = 0$ bypasses the lead-lag (ANDES `zero_out`), recovering the earlier first-order-only path. The summing junction is exactly the code's $V_{\mathrm{ref}} - V$ with $V$ the generator-bus voltage magnitude, and $E_{\mathrm{MIN}}/E_{\mathrm{MAX}}$ are **not** CSV columns: they come from `TsBoundLimitsConfig.E_min_pu` / `E_max_pu` (see the note on that overload below).*
 
-### The exciter as implemented
+### Lead-lag stage
 
-!!! note "Model 8.1 (first-order exciter)"
+!!! note "Model 8.0 (SEXS lead-lag)"
+    ```math
+    \begin{equation}
+    \label{eq:avr-ll-8}
+    T_{b,g}\,\frac{d E_{\mathrm{LL},g}}{dt} + E_{\mathrm{LL},g}
+      = T_{a,g}\,\frac{d u_g}{dt} + u_g ,
+    \qquad
+    u_g = V_{\mathrm{ref},g} - V_{k(g)} .
+    \end{equation}
+    ```
+
+    Built by `eq_const_avr_leadlag!` for every SG with $T_a$ or $T_b$ non-zero. Unity DC gain leaves the pre-fault link of Model 8.2 unchanged. The trapezoidal row is written in the $(2 T_b \pm \Delta t)$ form and then divided by $n = 2 T_b + \Delta t$ (always positive), so the coefficient on $E_{\mathrm{LL}}^t$ is exactly 1 — the same dual-scale convention as the TGOV1 turbine lead-lag. When $t_{\mathrm{step}} > 2 T_b$ the builder warns that the update factor turns negative (stable ringing).
+
+### The gain-lag as implemented
+
+!!! note "Model 8.1 (SEXS gain-lag)"
     ```math
     \begin{equation}
     \label{eq:avr-ode-8}
     T_{\mathrm{exc},g}\,\frac{d\tilde{E}_{fd,g}}{dt}
-      = K_{\mathrm{exc},g}\bigl(V_{\mathrm{ref},g} - V_{k(g)}\bigr) - \tilde{E}_{fd,g} ,
+      = K_{\mathrm{exc},g}\,E_{\mathrm{LL},g} - \tilde{E}_{fd,g} ,
     \qquad
     E_{fd,g} = \mathrm{sat}\bigl(\tilde{E}_{fd,g}\bigr) .
     \end{equation}
     ```
 
-    $V_{k(g)}$ is the voltage magnitude at the generator's bus, taken per time step from `V_tf` / `V_tpf` on the FULL_BUS network. The saturated output $E_{fd,g}$, not the raw state, is what enters the $E'_q$ dynamics of Model 3.4.
+    When the lead-lag is bypassed, $E_{\mathrm{LL},g}$ is replaced by the raw voltage error $V_{\mathrm{ref},g} - V_{k(g)}$ and the ODE collapses to the earlier first-order form. $V_{k(g)}$ is the voltage magnitude at the generator's bus, taken per time step from `V_tf` / `V_tpf` on the FULL_BUS network. The saturated output $E_{fd,g}$, not the raw state, is what enters the $E'_q$ dynamics of Model 3.4.
 
 !!! note "It is a lag, not an integrator"
     The $-\tilde{E}_{fd,g}$ self-decay term is easy to lose sight of, and dropping it turns the block into a pure integrator with very different transient behaviour. To confirm it is there, expand the trapezoidal rows below and divide by $\Delta t$: $\eqref{eq:avr-ode-8}$ comes back with the decay term intact. That is what makes $K/(1+T_E s)$ in the figure the right reading, and what makes the pre-fault link of Model 8.2 the steady state of the same equation rather than an independent assumption.
@@ -72,11 +89,11 @@ The window ODEs are trapezoidal. With $c = \Delta t / (2 T_{\mathrm{exc},g})$, t
     \label{eq:avr-trap-8}
     \tilde{E}_{fd,g}^{\,t}(1+c)
       - E_{fd,g}^{\,t-1}(1-c)
-      - K_{\mathrm{exc},g}\,c\left(2V_{\mathrm{ref},g} - V_{k(g)}^{t} - V_{k(g)}^{t-1}\right) = 0 .
+      - K_{\mathrm{exc},g}\,c\left(E_{\mathrm{LL},g}^{t} + E_{\mathrm{LL},g}^{t-1}\right) = 0 .
     \end{equation}
     ```
 
-    Two details that are easy to miss. First, the previous-step anchor is the **saturated** $E_{fd}^{t-1}$, not the raw state $\tilde{E}_{fd}^{\,t-1}$ — this is the anti-windup behaviour: once the clamp is active, the integrator is fed back its limited output rather than its own unlimited history. Second, $t=1$ of each window anchors across the window boundary: the fault window uses the pre-fault scalar pair $(E_{fd,g}, V_{k(g)})$, the post-fault window uses the last fault-on pair.
+    With the lead-lag bypassed, $E_{\mathrm{LL}}^{t} + E_{\mathrm{LL}}^{t-1}$ is replaced by $2V_{\mathrm{ref}} - V^{t} - V^{t-1}$ — the same trapezoidal average of the raw voltage error. Two details that are easy to miss. First, the previous-step anchor is the **saturated** $E_{fd}^{t-1}$, not the raw state $\tilde{E}_{fd}^{\,t-1}$ — this is the anti-windup behaviour: once the clamp is active, the integrator is fed back its limited output rather than its own unlimited history. Second, $t=1$ of each window anchors across the window boundary: the fault window uses the pre-fault scalar pair $(E_{fd,g}, V_{k(g)})$, the post-fault window uses the last fault-on pair.
 
     The row is normalised on the state, not on $K_{\mathrm{exc},g}$: the gain multiplies the voltage-error term instead of dividing the two field-voltage terms. Both forms describe the same ODE — they differ by the constant factor $K_{\mathrm{exc},g}$ on the whole row — but this one keeps the $(1+c)$ coefficient on $\tilde{E}_{fd}$ that every other state ODE in the package uses, and matches the backward-Euler row below.
 
@@ -191,7 +208,7 @@ DynModelConfig(
     gen_order        = DQ_4TH,      # AVR requires this; governor does not
     network_form     = FULL_BUS,
     mech_power_mode  = USE_PM,      # governor writes P_m; USE_PG has nothing to write to
-    bound_style      = :coi_box,
+    bound_style_δ      = :coi_box,
     include_avr      = true,
     include_governor = true,
     governor_limiter = GOV_SMOOTH,

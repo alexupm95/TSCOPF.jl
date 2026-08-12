@@ -74,7 +74,7 @@ These are enforced at runtime and throw rather than silently degrading. Sources 
 | `include_avr` ⇒ `gen_order = DQ_4TH` | No "2nd order + AVR" exists. A constant-EMF machine has no field winding. |
 | `allow_gfm` ⇒ `FULL_BUS` **and** `DQ_4TH` **and** not DC-OPF | No "2nd order + GFM" exists either. |
 | `include_governor` ⇒ `USE_PM` **and** `FULL_BUS` | The governor is legal on a 2nd-order machine (07), but not on Kron. |
-| `gen_order = DQ_4TH` ⇒ `FULL_BUS`, `USE_PM`, `bound_style = :coi_box` | The 4th-order machine has one legal network/mech/bound shape. |
+| `gen_order = DQ_4TH` ⇒ `FULL_BUS`, `USE_PM`, `bound_style_δ = :coi_box` | The 4th-order machine has one legal network/mech/bound shape. |
 | `FULL_BUS` ⇒ `USE_PM`, hence `:coi_box` | Checked before any solve; the builder repeats it as a backstop. |
 | `ode_first_step = :backward_euler` ⇒ `FULL_BUS` | The Kron swing rows are trapezoidal at every step, so Kron rejects it. |
 | TSC-DCOPF forbids `DQ_4TH`, `FULL_BUS` and `allow_gfm` | Kron + 2nd order is the only linearised shape. |

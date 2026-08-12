@@ -106,10 +106,10 @@ function matpower_fullbus_config(; case::String, matpower_file::Union{Nothing, S
             dyn_model = DynModelConfig(
                 network_form    = FULL_BUS,
                 mech_power_mode = USE_PM,
-                bound_style     = :coi_box,
+                bound_style_δ     = :coi_box,
                 zip_load_p        = (1.0, 0.0, 0.0),
                 zip_load_q        = (1.0, 0.0, 0.0),
-                constrain_Δω_COI = false,
+                constrain_Δω = false,
                 fault = FaultConfig(fault_type = SC, contingency_id = 2),
             ),
         ),

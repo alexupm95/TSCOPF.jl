@@ -4,7 +4,7 @@
 ================================================================================
 =#
 
-# The δ-COI `bound_style` dispatchers (`_add_δ_COI_bounds_fault!` / `_postf!`) live in
+# The δ-COI `bound_style_δ` dispatchers (`_add_δ_bounds_fault!` / `_postf!`) live in
 # functions_4_TS_kron_ineqconst.jl next to the two constraint families they choose
 # between; every network form calls the same pair.
 

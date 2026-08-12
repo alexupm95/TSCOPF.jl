@@ -166,9 +166,9 @@ const dyn_model_cfg = DynModelConfig(
     # constant admittance — and a non-default value here only earns a warning.
     zip_load_p              = (1.0, 0.0, 0.0),  # active demand: 100 % constant impedance, 0 % current, 0 % power
     zip_load_q              = (1.0, 0.0, 0.0),  # reactive demand: same split, set independently of the active one
-    bound_style             = :swing_propagated,  # :swing_propagated = stability bound propagated through the swing; :coi_box = direct corridor
-    constrain_Δω_COI        = false,            # false = no corridor on Δω_i − Δω_COI; true builds the frequency box
-    Δω_tol_pu               = 0.5,              # half-width of that Δω corridor [pu]; read only when constrain_Δω_COI = true
+    bound_style_δ             = :swing_propagated,  # :swing_propagated = stability bound propagated through the swing; :coi_box = direct corridor
+    constrain_Δω        = false,            # false = no corridor on Δω_i − Δω_COI; true builds the frequency box
+    Δω_tol_pu               = 0.5,              # half-width of that Δω corridor [pu]; read only when constrain_Δω = true
     Δω_tol_pu_lower         = nothing,          # nothing = reuse Δω_tol_pu below the COI
     Δω_tol_pu_upper         = nothing,          # nothing = reuse Δω_tol_pu above the COI
     fault                   = fault_cfg,        # the FaultConfig instance built above

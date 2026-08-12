@@ -108,7 +108,7 @@ include("engine.jl")
 # --- public API ---------------------------------------------------------------
 
 export RunConfig, reconfigure, reconfigure_transient, SystemData, load_system, run_case!
-export validate_run_config!, validate_dyn_config!
+export validate_run_config!, validate_dyn_config!, validate_δ_reference!
 export DispatchConfig, DispatchLimitsConfig, BoundEncoding, TransientConfig, TsSimulationConfig, TsBuilderConfig
 export TsBoundLimitsConfig, TsBoundLimitPair
 export validate_dispatch_config!

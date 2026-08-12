@@ -25,11 +25,11 @@ smoke_cases = [
 
     "TSC-ACOPF" => reconfigure_dyn(tsc_run_config(type_model = "ACOPF", solver_name = "Ipopt",
         silent_solver = true, save_optim_matrices = false);
-        dyn_model = DynModelConfig(constrain_Δω_COI = false)),
+        dyn_model = DynModelConfig(constrain_Δω = false)),
 
     "TSC-DCOPF" => reconfigure_dyn(tsc_run_config(type_model = "DCOPF", solver_name = "HiGHS",
         silent_solver = true, save_optim_matrices = false);
-        dyn_model = DynModelConfig(constrain_Δω_COI = false)),
+        dyn_model = DynModelConfig(constrain_Δω = false)),
 ]
 
 @testset "TSC-OPF smoke tests (9-bus)" begin

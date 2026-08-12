@@ -37,7 +37,7 @@ explicit bus voltage/angle states and requires a mandatory ACOPF warm start.
 
 Mechanical power used in the swing equation. `USE_PG` (default) uses the
 dispatch decision `P_g` directly; `USE_PM` introduces an explicit `P_m`
-variable and requires `bound_style = :coi_box`. `FULL_BUS` requires `USE_PM`.
+variable and requires `bound_style_δ = :coi_box`. `FULL_BUS` requires `USE_PM`.
 """
 @enum MechPowerMode  USE_PG USE_PM
 
@@ -64,20 +64,47 @@ run (`RunConfig.transient.dyn_model`).
 Core knobs: `gen_order` (machine model), `network_form` (Kron-reduced vs
 full-bus nodal), `mech_power_mode` (`P_g` vs explicit `P_m` in the swing
 equation), `zip_load_p` / `zip_load_q` (independent constant-Z/I/P demand
-splits for `FULL_BUS`, each `(Z, I, P)` and each summing to 1),
-`bound_style` (`:swing_propagated` or `:coi_box`), and `fault::FaultConfig`.
+splits for `FULL_BUS`, each `(Z, I, P)` and each summing to 1), the two
+stability corridors described below, and `fault::FaultConfig`.
 
 The two ZIP vectors are independent so the active and reactive demand can follow
 different TSO conventions — e.g. REE's constant-current active / constant-admittance
 reactive is `zip_load_p = (0.0, 1.0, 0.0)` with `zip_load_q = (1.0, 0.0, 0.0)`.
 
-Optional COI-referenced speed box: `constrain_Δω_COI` enables it, `Δω_tol_pu` sets a
-symmetric half-width, and `Δω_tol_pu_lower` / `Δω_tol_pu_upper` set independent
-below/above limits (positive magnitudes, p.u.).
+# Stability corridors
 
-Validation rules enforced in `validate_dyn_config!`: `USE_PM` requires
-`bound_style = :coi_box`; `FULL_BUS` requires `USE_PM` plus a solved ACOPF
-warm start; TSC-DCOPF + `FULL_BUS` is not implemented.
+The rotor-angle and speed corridors are **independent**: each has its own on/off
+toggle and its own reference, and a transient run needs at least one of them.
+
+Rotor angle — `constrain_δ` (default `true`) with `bound_style_δ`:
+
+| `bound_style_δ` | Corridor |
+|---|---|
+| `:swing_propagated` | `δ_g − δ_COI` band with one swing step substituted for `δ_g[t]` |
+| `:coi_box` | plain box on `δ_g − δ_COI` |
+| `:highest_H` | plain box on `δ_g − δ_ref`, `ref` = largest-`H` surviving synchronous machine |
+| `:ref_gen` | same, `ref` = `δ_ref_gen_id` (required for this style) |
+
+The half-widths come from `TsSimulationConfig.δ_tol_deg*`. The machine-referenced
+styles follow the common convention of bounding the n−1 remaining machines against
+one live reference unit; the reference itself carries no row.
+
+Speed — `constrain_Δω` (default `false`) with `bound_style_Δω`:
+
+| `bound_style_Δω` | Corridor |
+|---|---|
+| `:coi_box` | box on `Δω_g − Δω_COI` |
+| `:abs` | box on the raw `Δω_g` of the swing equation; no COI is formed at all |
+
+`Δω_tol_pu` sets a symmetric half-width, `Δω_tol_pu_lower` / `Δω_tol_pu_upper` set
+independent below/above limits (positive magnitudes, p.u.). Both styles read the same
+three fields.
+
+Validation rules enforced in `validate_dyn_config!`: `USE_PM` and `DQ_4TH` reject
+`:swing_propagated` (that row substitutes the dispatch power into the angle band, which
+is inconsistent with an explicit `P_m`); `FULL_BUS` requires `USE_PM` plus a solved
+ACOPF warm start; TSC-DCOPF + `FULL_BUS` is not implemented. The data-dependent
+reference-generator checks live in `validate_δ_reference!`, also pre-warm-start.
 
 See the user guide, section 4.
 """
@@ -148,16 +175,27 @@ Base.@kwdef struct DynModelConfig
     zip_load_p::NTuple{3, Float64} = (1.0, 0.0, 0.0)  # active-demand split (Z, I, P)
     zip_load_q::NTuple{3, Float64} = (1.0, 0.0, 0.0)  # reactive-demand split (Z, I, P)
 
-    # Stability bound style: DQ_4TH requires :coi_box (enforced in validate_dyn_config!)
-    bound_style::Symbol           = :swing_propagated
-    # Optional box bounds on Δω_i − Δω_COI (off by default). `Δω_tol_pu` is the
-    # symmetric half-width; the two overrides set independent below/above limits as
-    # positive magnitudes, mirroring δ_tol_deg / δ_tol_deg_lower / δ_tol_deg_upper.
+    # --- rotor-angle corridor --------------------------------------------------
+    # Half-widths come from TsSimulationConfig.δ_tol_deg*. USE_PM / DQ_4TH reject
+    # :swing_propagated (enforced in validate_dyn_config!); :ref_gen requires an id.
+    constrain_δ::Bool             = true
+    bound_style_δ::Symbol         = :swing_propagated  # :coi_box | :highest_H | :ref_gen
+    # Reference machine for bound_style_δ = :ref_gen (a DGEN_DYN generator id). Must be
+    # in service, not tripped by a GL disturbance, and not a GFM unit — checked against
+    # the actual system data in validate_δ_reference!, before the warm-start solve.
+    δ_ref_gen_id::Union{Nothing, Int} = nothing
+
+    # --- speed corridor ----------------------------------------------------------
+    # Off by default. :coi_box bounds Δω_i − Δω_COI, :abs bounds the raw Δω of the swing
+    # equation and forms no COI. `Δω_tol_pu` is the symmetric half-width; the two
+    # overrides set independent below/above limits as positive magnitudes, mirroring
+    # δ_tol_deg / δ_tol_deg_lower / δ_tol_deg_upper.
     # e.g. lower=0.05, upper=0.03 → the signed pair (-0.05, +0.03).
-    constrain_Δω_COI::Bool      = false
+    constrain_Δω::Bool            = false
+    bound_style_Δω::Symbol        = :coi_box           # :abs
     Δω_tol_pu::Float64            = 0.5
-    Δω_tol_pu_lower::Union{Nothing, Float64} = nothing  # below COI [p.u.]; default → Δω_tol_pu
-    Δω_tol_pu_upper::Union{Nothing, Float64} = nothing  # above COI [p.u.]; default → Δω_tol_pu
+    Δω_tol_pu_lower::Union{Nothing, Float64} = nothing  # below reference [p.u.]; default → Δω_tol_pu
+    Δω_tol_pu_upper::Union{Nothing, Float64} = nothing  # above reference [p.u.]; default → Δω_tol_pu
 
     # Disturbance specification (SC via contingencies.csv; GL / OB via explicit ids)
     fault::FaultConfig            = FaultConfig()
@@ -217,7 +255,9 @@ function required_dyn_column_names(dyn::DynModelConfig)::Vector{Symbol}
         append!(cols, [:Xq_tr, :Xd, :Xq, :Td, :Tq, :Ra])
     end
     if dyn.include_avr
-        append!(cols, [:T_exc, :K_exc])
+        # Ta_exc / Tb_exc are the SEXS lead-lag stage; `0` for both bypasses it, but the
+        # columns still have to be there so a blank cell cannot silently mean "bypass".
+        append!(cols, [:T_exc, :K_exc, :Ta_exc, :Tb_exc])
     end
     if dyn.include_governor
         append!(cols, [:R, :T1, :T2, :T3])
@@ -233,6 +273,7 @@ const _DYN_COLUMN_REASON = Dict{Symbol, String}(
     :Xq_tr => "gen_order=DQ_4TH", :Xd => "gen_order=DQ_4TH", :Xq => "gen_order=DQ_4TH",
     :Td => "gen_order=DQ_4TH",    :Tq => "gen_order=DQ_4TH", :Ra => "gen_order=DQ_4TH",
     :T_exc => "include_avr=true", :K_exc => "include_avr=true",
+    :Ta_exc => "include_avr=true", :Tb_exc => "include_avr=true",
     :R => "include_governor=true", :T1 => "include_governor=true",
     :T2 => "include_governor=true", :T3 => "include_governor=true",
 )

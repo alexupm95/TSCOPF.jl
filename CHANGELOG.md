@@ -6,6 +6,18 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ### Breaking
 
+- **`include_avr = true` now requires two more machine-CSV columns, `Ta_exc` and
+  `Tb_exc`.** They carry the SEXS lead-lag time constants (see Added below). Any
+  `gen_dynamic_data_full.csv` written before this change aborts from
+  `validate_dyn_data!`, before any model is built, with both column names and the
+  reason. Every fixture in this repository was updated in the same commit, so the
+  test suite does not see the break — your own input files will.
+  **Migration:** add two columns named `Ta_exc` and `Tb_exc` and set both to `0`
+  for every generator. The parser matches on header name, not position, so where
+  you put them does not matter. Both zero is the exact pass-through bypass: no
+  variables, no rows, and a model identical to the previous first-order exciter.
+  Runs with `include_avr = false` and the minimal 5-column CSV are unaffected.
+
 - **`RunConfig.use_acopf_warmstart` is removed.** Its only legal value was already
   determined by `network_form`: FULL_BUS TSC-ACOPF must pre-solve the steady-state
   ACOPF that seeds every coupling variable, and no other path pre-solves at all.
@@ -27,7 +39,77 @@ All notable changes to this project are documented here. Format follows [Keep a 
   forces that value) will produce different numbers — the ones the configuration
   always claimed. To keep the old model, say `:swing_propagated` explicitly.
 
+- **`bound_style` is split into `bound_style_δ` and `bound_style_Δω`, and
+  `constrain_Δω_COI` is renamed `constrain_Δω`.** The rotor-angle and speed
+  corridors are now independent knobs on `DynModelConfig`, each with its own
+  toggle and reference. There is no deprecation alias: the old field names raise
+  a `MethodError` at construction.
+  **Migration:** rename `bound_style` → `bound_style_δ` and
+  `constrain_Δω_COI` → `constrain_Δω`. Defaults are unchanged
+  (`:swing_propagated`, `false`), so a run reproduces its previous numbers once
+  the names are updated.
+
+- **The `USE_PM` and `DQ_4TH` corridor rules now reject `:swing_propagated` by
+  name** instead of demanding `:coi_box` specifically, so the new box styles are
+  accepted where only `:coi_box` used to be. A configuration that was valid
+  before is still valid.
+
+- **A transient run must now enable at least one corridor.** `constrain_δ = false`
+  together with `constrain_Δω = false` throws from `validate_dyn_config!`; it
+  previously would have built an unconstrained trajectory bolted onto an OPF.
+
 ### Added
+
+- **Machine-referenced rotor-angle corridor.** `bound_style_δ = :highest_H` bounds
+  every surviving machine against the largest-inertia one; `:ref_gen` bounds them
+  against `δ_ref_gen_id`. The reference carries no row of its own, so the corridor
+  spans n−1 machines — the convention used in much of the transient-stability
+  literature. `:highest_H` selects over the machines that survive the disturbance,
+  so a unit the run trips can never become the reference. Duals export as
+  `dual_δ_ref_lower` / `dual_δ_ref_upper`, and the new `angle_rel_ref.csv` carries
+  the trajectory the corridor actually bounds.
+
+- **Absolute speed corridor.** `bound_style_Δω = :abs` bounds the raw `Δω` of the
+  swing equation instead of `Δω − Δω_COI`, and forms no speed COI at all. Because
+  `Δω_COI` is a free variable, the COI box prices only the spread between machines
+  while the absolute box also prices the fleet's common-mode frequency excursion —
+  which is largely redispatch-invariant during a bus fault, so an absolute band
+  tighter than that drift is infeasible rather than expensive. Duals export as
+  `dual_Δω_abs_lower` / `dual_Δω_abs_upper`.
+
+- **Grid-forming converters join the corridors that are not inertia-weighted.** On a
+  mixed SG + GFM fleet, `bound_style_δ ∈ (:highest_H, :ref_gen)` and
+  `bound_style_Δω = :abs` now bound the converters alongside the machines, against
+  the same reference and the same tolerances: `δ_g − δ_ref` and the raw `Δω` need no
+  `H` from `g`, and the converter angle is the same network angle in the same Park
+  frame. The COI-referenced styles stay synchronous-machine only, since their
+  reference is an inertia-weighted average. `δ_ref_gen_id` may now name a converter;
+  `:highest_H` may not select one, because it ranks by inertia. Converter duals
+  merge into the existing families as extra `Gen_*` columns — no new CSV, no
+  registry change — while `swing_debug.csv` stays SG-only, its columns (`H`, `D`,
+  accelerating power) having no meaning for a droop converter.
+
+- **`validate_δ_reference!`**, called from `run_case!` before the FULL_BUS
+  warm-start solve, rejects a reference generator that is out of range, out of
+  service, tripped by the disturbance, grid-forming, or inertia-less, and a fleet
+  with fewer than two surviving machines.
+
+- **SEXS AVR lead-lag stage.** With `include_avr=true`, the exciter is the full
+  SEXS chain `(1+s·Ta_exc)/(1+s·Tb_exc)` → `K_exc/(1+s·T_exc)` → smooth field
+  clamp, driven by the two new CSV columns (listed under Breaking above).
+  `Ta_exc = Tb_exc = 0` bypasses the lead-lag entirely — no variables, no rows —
+  so every shipped fixture keeps the previous first-order-only model. `Tb_exc = 0`
+  with `Ta_exc > 0` is rejected by `validate_dyn_data!` (bare differentiator).
+  Trapezoidal row is normalized by `(2·Tb + Δt)` so `dual_avr_leadlag` stays
+  comparable across machines; a builder warning fires when `t_step > 2·Tb_exc`.
+  Trajectories: `dq_E_LL_pu.csv`. Duals: `dual_avr_leadlag.csv`.
+
+- **`include_avr` now rejects a non-positive `T_exc` or `K_exc`.** Both are
+  divided by — `T_exc` in the exciter row's `c = Δt/(2·T_exc)`, `K_exc` in the
+  lead-lag warm start — and presence-and-finiteness was the only check, so a `0`
+  passed straight through to infinite coefficients or a meaningless equilibrium
+  (`E_fd = 0` with the exciter's input gone). `validate_avr_data!` now checks
+  both alongside the lead-lag rules, per row, behind the `include_avr` gate.
 
 - **`RunConfig.run_script` archives the script that configured the run.** Set it to
   `@__FILE__` in the run script and `run_case!` copies that `.jl` file, byte for byte,
@@ -49,6 +131,22 @@ All notable changes to this project are documented here. Format follows [Keep a 
   CLASSICAL_2ND FULL_BUS run silently integrated trapezoidally whatever was asked
   for. Backward Euler now reaches its swing rows and, with `include_governor`, the
   TGOV1 rows too. DQ_4TH is unchanged; Kron rejects the value (see above).
+
+### Changed
+
+- **`δ_COI` is only a variable when something constrains it.** Under a
+  machine-referenced corridor (or `constrain_δ = false`) it is built as a JuMP
+  expression instead — no column, no defining equality, and no `dual_δCOI` — while
+  `angle_rel_COI.csv` and the `δ_rel_COI` column of `swing_debug.csv` stay
+  populated so the run remains comparable with a COI-referenced one.
+  `TsBuilderConfig.bound_δCOI_tf` / `bound_δCOI_tpf` need that variable and are now
+  rejected at validation on those runs, rather than being silently ignored.
+
+- **`dynamic_model_details.txt`** reports both corridors on their own lines and
+  names the resolved reference machine. `swing_debug.csv` gains `δ_ref_gen`,
+  `δ_rel_ref`, its margins and utilisation, `dual_δ_ref_*`, and the `Δω_abs_*`
+  margins and duals; the columns are always present and NaN under a style that did
+  not build them.
 
 ### Fixed
 
@@ -232,7 +330,6 @@ All notable changes to this project are documented here. Format follows [Keep a 
   every `active_gen`, so a partly-filled column is a genuine error rather than a per-unit
   opt-out.
 
-### Changed
 
 - **The two DC susceptance builders collapsed into one.** `Calculate_Matrix_B` and
   `Calculate_Matrix_B_PowerModels` were identical apart from the per-branch kernel, which

@@ -77,7 +77,7 @@ cfg = RunConfig(
 
             # Pre-fault P/Q/Pm init equalities are always-on physics (not toggles).
 
-            # ── δ-COI stability bounds (separate from bound_style on DynModelConfig)
+            # ── δ-COI stability bounds (separate from bound_style_δ on DynModelConfig)
             ineq_δ_COI_tf_lower  = true,   # δ_i − δ_COI ≥ −δ_tol
             ineq_δ_COI_tf_upper  = true,   # δ_i − δ_COI ≤ +δ_tol
             ineq_δ_COI_tpf_lower = true,
@@ -98,13 +98,13 @@ cfg = RunConfig(
         dyn_model  = DynModelConfig(
             network_form      = FULL_BUS,
             mech_power_mode   = USE_PM,
-            bound_style       = :coi_box,
+            bound_style_δ       = :coi_box,
             # Independent (Z, I, P) splits for active and reactive demand. Both pure
             # constant impedance here; e.g. REE style would be zip_load_p = (0.0, 1.0, 0.0)
             # (constant current) with zip_load_q = (1.0, 0.0, 0.0) (constant admittance).
             zip_load_p        = (1.0, 0.0, 0.0),  # (Z, I, P) — active demand
             zip_load_q        = (1.0, 0.0, 0.0),  # (Z, I, P) — reactive demand
-            constrain_Δω_COI  = false,
+            constrain_Δω  = false,
             fault             = FaultConfig(fault_type = SC, contingency_id = 2),
         ),
         

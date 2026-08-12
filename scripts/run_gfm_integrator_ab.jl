@@ -110,7 +110,7 @@ function ab_cfg(scheme::Symbol; case::String, t_step::Float64)
                 gen_order = DQ_4TH,
                 network_form = FULL_BUS,
                 mech_power_mode = USE_PM,
-                bound_style = :coi_box,
+                bound_style_δ = :coi_box,
                 # Package (Z, I, P); the reference [0,0,1] is (P, I, Z) → same physics.
                 # Getting this backwards silently gives constant-power loads and an
                 # iteration-limit exit (CLAUDE.md §2).

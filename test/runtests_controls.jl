@@ -81,7 +81,7 @@ function controls_run(; gen_order::GenOrder = DQ_4TH,
                 gen_order = gen_order,
                 network_form = FULL_BUS,
                 mech_power_mode = USE_PM,
-                bound_style = :coi_box,
+                bound_style_δ = :coi_box,
                 zip_load_p = CTRL_ZIP,
                 zip_load_q = CTRL_ZIP,
                 include_avr = include_avr,
@@ -144,7 +144,7 @@ end
         # Governor on the Kron path is rejected (no ACOPF warm start there).
         cfg_kron = tsc_run_config(; dyn_model = DynModelConfig(
             network_form = KRON_REDUCED, mech_power_mode = USE_PM,
-            bound_style = :coi_box, include_governor = true,
+            bound_style_δ = :coi_box, include_governor = true,
             fault = FaultConfig(contingency_id = 2)))
         @test_throws ArgumentError validate_dyn_config!(cfg_kron)
 
@@ -163,7 +163,7 @@ end
     @testset "factory wires the control flags" begin
         dq(; kwargs...) = TSCOPF.dynamic_gen_model(
             DynModelConfig(; gen_order = DQ_4TH, network_form = FULL_BUS,
-                mech_power_mode = USE_PM, bound_style = :coi_box, kwargs...);
+                mech_power_mode = USE_PM, bound_style_δ = :coi_box, kwargs...);
             linearize = false)
 
         m_avr = dq(include_avr = true)
@@ -191,6 +191,51 @@ end
         @test sat !== unlim
         @test eq !== nothing
         @test all(length(eq[g]) == nt for g in gens)
+    end
+
+    @testset "AVR lead-lag row (structural)" begin
+        # Trapezoidal lead-lag is normalized by n = 2·Tb + Δt so the coefficient on
+        # E_LL[t] is exactly 1; that is what keeps dual_avr_leadlag comparable across
+        # machines. The both-zero bypass must drop every generator from the build list.
+        gens = [1, 2, 3]
+        DGEN = DataFrame(bus = [1, 2, 3])
+        DGEN_DYN = DataFrame(
+            Ta_exc = [2.0, 0.0, 0.0],
+            Tb_exc = [5.0, 0.0, 0.0],
+            K_exc  = [100.0, 100.0, 100.0],
+        )
+        @test TSCOPF._avr_leadlag_gens(gens, DGEN_DYN) == [1]
+
+        Δt = 0.02; nt = 3
+        Ta, Tb = 2.0, 5.0
+        n = 2 * Tb + Δt
+        m = JuMP.Model()
+        E_LL = _toy_gen_time_vars(m, [1], nt, "E_LL")
+        V_ref = OrderedDict(1 => JuMP.@variable(m, base_name = "Vref[1]"))
+        V_tf = OrderedDict(1 => OrderedDict(
+            t => JuMP.@variable(m, base_name = "V[1,$t]") for t in 1:nt))
+        y0 = OrderedDict(1 => JuMP.@variable(m, base_name = "y0[1]"))
+        u0 = OrderedDict(1 => JuMP.@variable(m, base_name = "u0[1]"))
+        eq = TSCOPF.eq_const_avr_leadlag!(
+            m, [1], DGEN, DGEN_DYN, E_LL, V_ref, V_tf, y0, u0,
+            zeros(nt), Δt; ode_first_step = :trapezoidal)
+        for t in 1:nt
+            con = eq[1][t]
+            @test JuMP.normalized_coefficient(con, E_LL[1][t]) ≈ 1.0
+            y_prev = t == 1 ? y0[1] : E_LL[1][t - 1]
+            @test JuMP.normalized_coefficient(con, y_prev) ≈ -(2 * Tb - Δt) / n
+            # u_curr = V_ref − V[t]; u_prev is the free u0 at t=1, else V_ref − V[t−1].
+            if t == 1
+                @test JuMP.normalized_coefficient(con, V_ref[1]) ≈ -(2 * Ta + Δt) / n
+                @test JuMP.normalized_coefficient(con, V_tf[1][t]) ≈ (2 * Ta + Δt) / n
+                @test JuMP.normalized_coefficient(con, u0[1]) ≈ (2 * Ta - Δt) / n
+            else
+                @test JuMP.normalized_coefficient(con, V_ref[1]) ≈
+                    -((2 * Ta + Δt) / n) + ((2 * Ta - Δt) / n)
+                @test JuMP.normalized_coefficient(con, V_tf[1][t]) ≈ (2 * Ta + Δt) / n
+                @test JuMP.normalized_coefficient(con, V_tf[1][t - 1]) ≈ -(2 * Ta - Δt) / n
+            end
+        end
     end
 
     @testset "governor valve limiters (structural)" begin
@@ -483,15 +528,100 @@ end
             @test haskey(dmd[:eq_const], :eq_const_E_fd_unlim_tf)
             @test haskey(dmd[:eq_const], :eq_const_E_fd_tf)
             @test get(dmd[:meta], :include_avr, false)
+            # Fixture ships Ta_exc = Tb_exc = 0 → lead-lag bypassed (no vars / duals).
+            @test !haskey(dmd[:vars], :E_LL_tf)
+            @test !haskey(dmd[:eq_const], :eq_const_avr_leadlag_tf)
 
             csv_dir   = result.path_names[:pf_TS_CSV]
             duals_dir = result.path_names[:pf_TS_CSV_duals]
             for f in ("avr_V_ref.csv", "dq_E_fd.csv", "dq_E_fd_pu.csv")
                 @test isfile(joinpath(csv_dir, f))
             end
+            @test !isfile(joinpath(csv_dir, "dq_E_LL_pu.csv"))
             for f in ("dual_Vref_init.csv", "dual_avr_E_fd.csv", "dual_avr_E_fd_sat.csv")
                 @test isfile(joinpath(duals_dir, f))
             end
+            @test !isfile(joinpath(duals_dir, "dual_avr_leadlag.csv"))
+        end
+
+        @testset "DQ_4TH + AVR lead-lag — SC end-to-end (ANDES SEXS defaults)" begin
+            cfg = RunConfig(;
+                trans_stab = true, case = "9bus", base_MVA = CTRL_BASE_MVA,
+                solver_name = "Ipopt", silent_solver = true, save_duals = true,
+                save_ts_plots = false, save_optim_matrices = false,
+                overwrite_results = TEST_OVERWRITE_RESULTS, load_factor = 1.5,
+                dispatch = DispatchConfig(type_model = "ACOPF", use_matrix = true),
+                transient = TransientConfig(
+                    simulation = CTRL_SIM,
+                    gen_dynamic_filename = "gen_dynamic_data_full.csv",
+                    dyn_model = DynModelConfig(
+                        gen_order = DQ_4TH, network_form = FULL_BUS,
+                        mech_power_mode = USE_PM, bound_style_δ = :coi_box,
+                        zip_load_p = CTRL_ZIP, zip_load_q = CTRL_ZIP,
+                        include_avr = true,
+                        fault = FaultConfig(fault_type = SC, contingency_id = 2),
+                    ),
+                ),
+            )
+            validate_dyn_config!(cfg)
+            sys = load_fixture_system(cfg)
+            # ANDES SEXS defaults: TB = 5, TA/TB = 0.4 → TA = 2.
+            sys.DGEN_DYN.Ta_exc .= 2.0
+            sys.DGEN_DYN.Tb_exc .= 5.0
+            # The mutation happens after load, so assert the values the builder is about to
+            # consume are values the validator accepts. Without this the suite validates
+            # lead-lag data it never builds and builds lead-lag data it never validates —
+            # a rule change on either side could keep both halves green while making a
+            # legitimate configuration unbuildable.
+            @test TSCOPF.validate_dyn_data!(cfg, sys.DGEN_DYN) === nothing
+            result = run_fixture_case!(cfg, sys)
+            @test result.status in CTRL_SOLVED
+            dmd = result.dyn_model_dict
+            @test haskey(dmd[:vars], :E_LL_tf)
+            @test haskey(dmd[:vars], :E_LL_tpf)
+            @test haskey(dmd[:eq_const], :eq_const_avr_leadlag_tf)
+            @test haskey(dmd[:eq_const], :eq_const_avr_leadlag_tpf)
+            @test isfile(joinpath(result.path_names[:pf_TS_CSV], "dq_E_LL_pu.csv"))
+            @test isfile(joinpath(result.path_names[:pf_TS_CSV_duals], "dual_avr_leadlag.csv"))
+        end
+
+        @testset "DQ_4TH + AVR lead-lag — Ta=Tb pass-through matches bypass" begin
+            # Building the identity block (Ta = Tb = 5) must reproduce the 0;0 bypass
+            # objective and dispatch to solver tolerance — the row is correct independently
+            # of the bypass optimization.
+            function _avr_run_with_ll!(Ta, Tb)
+                cfg = RunConfig(;
+                    trans_stab = true, case = "9bus", base_MVA = CTRL_BASE_MVA,
+                    solver_name = "Ipopt", silent_solver = true, save_duals = false,
+                    save_ts_plots = false, save_optim_matrices = false,
+                    overwrite_results = TEST_OVERWRITE_RESULTS, load_factor = 1.5,
+                    dispatch = DispatchConfig(type_model = "ACOPF", use_matrix = true),
+                    transient = TransientConfig(
+                        simulation = CTRL_SIM,
+                        gen_dynamic_filename = "gen_dynamic_data_full.csv",
+                        dyn_model = DynModelConfig(
+                            gen_order = DQ_4TH, network_form = FULL_BUS,
+                            mech_power_mode = USE_PM, bound_style_δ = :coi_box,
+                            zip_load_p = CTRL_ZIP, zip_load_q = CTRL_ZIP,
+                            include_avr = true,
+                            fault = FaultConfig(fault_type = SC, contingency_id = 2),
+                        ),
+                    ),
+                )
+                validate_dyn_config!(cfg)
+                sys = load_fixture_system(cfg)
+                sys.DGEN_DYN.Ta_exc .= Ta
+                sys.DGEN_DYN.Tb_exc .= Tb
+                return run_fixture_case!(cfg, sys)
+            end
+            res_bypass = _avr_run_with_ll!(0.0, 0.0)
+            res_pass   = _avr_run_with_ll!(5.0, 5.0)
+            @test res_bypass.status in CTRL_SOLVED
+            @test res_pass.status in CTRL_SOLVED
+            @test !haskey(res_bypass.dyn_model_dict[:vars], :E_LL_tf)
+            @test haskey(res_pass.dyn_model_dict[:vars], :E_LL_tf)
+            @test isapprox(res_pass.obj_MVA, res_bypass.obj_MVA; rtol = 1e-5)
+            @test isapprox(res_pass.RGEN.p_g, res_bypass.RGEN.p_g; rtol = 1e-5)
         end
 
         @testset "DQ_4TH + AVR + TGOV1 — SC end-to-end (reference control stack)" begin

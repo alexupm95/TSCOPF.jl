@@ -32,7 +32,7 @@ function run_fullbus_gld(;
     ); dyn_model = DynModelConfig(
         network_form = FULL_BUS,
         mech_power_mode = USE_PM,
-        bound_style = :coi_box,
+        bound_style_δ = :coi_box,
         zip_load_p = ZIP_IMPEDANCE,
         zip_load_q = ZIP_IMPEDANCE,
         fault = fault,
@@ -171,7 +171,7 @@ end
             dyn_model=DynModelConfig(
                 network_form=FULL_BUS,
                 mech_power_mode=USE_PM,
-                bound_style=:coi_box,
+                bound_style_δ=:coi_box,
                 zip_load_p=ZIP_IMPEDANCE,
                 zip_load_q=ZIP_IMPEDANCE,
                 fault=FaultConfig(fault_type=OB, ob_branch_ids=[6]),
@@ -189,7 +189,7 @@ end
             dyn_model=DynModelConfig(
                 network_form=FULL_BUS,
                 mech_power_mode=USE_PM,
-                bound_style=:coi_box,
+                bound_style_δ=:coi_box,
                 zip_load_p=ZIP_IMPEDANCE,
                 zip_load_q=ZIP_IMPEDANCE,
                 fault=FaultConfig(fault_type=GL, gl_gen_ids=[3]),

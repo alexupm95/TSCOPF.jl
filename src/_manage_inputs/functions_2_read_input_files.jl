@@ -1,9 +1,10 @@
 # ===================================================================================
-# Generator dynamic data — header-based parser (minimal 5-col or full 17-col CSV)
+# Generator dynamic data — header-based parser (minimal 5-col or full 19-col CSV)
 # ===================================================================================
 
 const _GEN_DYN_OPTIONAL_COLS = (
-    :Xq_tr, :Xd, :Xq, :Td, :Tq, :Ra, :T_exc, :K_exc, :R, :T1, :T2, :T3,
+    :Xq_tr, :Xd, :Xq, :Td, :Tq, :Ra, :T_exc, :K_exc, :Ta_exc, :Tb_exc,
+    :R, :T1, :T2, :T3,
 )
 
 """Normalise a CSV header string for column matching."""
@@ -64,6 +65,10 @@ function Parse_Gen_Dynamic_DataFrame(df_raw::DataFrame)::DataFrame
             col_index["t_exc"] = j
         elseif h == "k_exc"
             col_index["k_exc"] = j
+        elseif h == "ta_exc"
+            col_index["ta_exc"] = j
+        elseif h == "tb_exc"
+            col_index["tb_exc"] = j
         elseif h == "r"
             col_index["r"] = j
         elseif h == "t1"
@@ -105,6 +110,7 @@ function Parse_Gen_Dynamic_DataFrame(df_raw::DataFrame)::DataFrame
         "xq_tr" => :Xq_tr, "xd_sync" => :Xd, "xq" => :Xq,
         "td" => :Td, "tq" => :Tq, "ra" => :Ra,
         "t_exc" => :T_exc, "k_exc" => :K_exc,
+        "ta_exc" => :Ta_exc, "tb_exc" => :Tb_exc,
         "r" => :R, "t1" => :T1, "t2" => :T2, "t3" => :T3,
     )
     for (key, sym) in optional_map

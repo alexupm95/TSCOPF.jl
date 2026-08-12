@@ -132,19 +132,54 @@ Two algebraic styles exist. They bound $\delta_g^t - \delta^{\mathrm{COI},t}$ in
 
 For $t > 1$, substitute the trapezoidal updates into $\eqref{eq:delta-coi-box-5}$ so the inequality involves $(\delta_g^{t-1}, \Delta\omega_g^{t-1}, P_g^{\mathrm{ele},t}, P_g^{\mathrm{ele},t-1}, P_{m,g})$ instead of $\delta_g^t$ alone. The propagated rows are built by `ineq_const_kron_δ_COI_generic_modified!`.
 
-| Path | Default `bound_style` | Constraint function |
+| `bound_style_δ` | Reference | Constraint function |
 |---|---|---|
-| Kron TSC-ACOPF / TSC-DCOPF | `:swing_propagated` | always `generic_modified!` |
-| FULL_BUS TSC-ACOPF | `:coi_box` | `generic!` or `generic_modified!` via `bound_style` |
+| `:swing_propagated` | $\delta^{\mathrm{COI}}$ | `ineq_const_kron_δ_COI_generic_modified!` |
+| `:coi_box` | $\delta^{\mathrm{COI}}$ | `ineq_const_kron_δ_COI_generic!` |
+| `:highest_H` | largest-$H$ surviving machine | `ineq_const_kron_δ_COI_generic!` with `δ[ref]` as the reference series |
+| `:ref_gen` | `δ_ref_gen_id` | same |
 
-Kron builders currently **always** call the propagated form regardless of the `bound_style` flag (the flag is still stored in run metadata). FULL_BUS dispatches on `bound_style` in `functions_4_TS_fullbus_ineqconst.jl`.
+Every network form dispatches on `bound_style_δ` through the same pair of entry points,
+`_add_δ_bounds_fault!` / `_add_δ_bounds_postf!` in `functions_4_TS_kron_ineqconst.jl` — Kron,
+Kron-linear, classical FULL_BUS and DQ FULL_BUS alike. Defaults differ (`:swing_propagated`
+on Kron, `:coi_box` on the FULL_BUS builders), but the choice is honoured everywhere.
+
+### Machine-referenced (`:highest_H`, `:ref_gen`)
+
+Instead of the inertia-weighted average, the band is measured against one live machine:
+
+```math
+\delta^{\mathrm{tol}}_{\mathrm{lower}} \;\le\; \delta_g^t - \delta_{\mathrm{ref}}^t \;\le\; \delta^{\mathrm{tol}}_{\mathrm{upper}},
+\qquad g \neq \mathrm{ref}.
+```
+
+The reference is excluded from its own corridor, so an $n$-unit fleet yields $n-1$ rows
+per time step. `:highest_H` resolves the reference over the machines that survive the
+disturbance, so a unit the run trips cannot be selected; `:ref_gen` takes the id from
+`DynModelConfig.δ_ref_gen_id`, validated against the system data before the warm-start
+solve.
+
+On a mixed fleet these two styles span the grid-forming converters as well: measuring
+$\delta_g - \delta_{\mathrm{ref}}$ needs no inertia from $g$, only an angle in the same
+frame, which the converter angle is. The *reference* under `:highest_H` is still always a
+machine, since that style ranks by $H$ and a converter carries none — a converter becomes
+the reference only through an explicit `:ref_gen`. See
+[9. Grid-forming converters](09_grid_forming.md) for what remains machine-only.
+
+Because nothing references $\delta^{\mathrm{COI}}$ under these styles, it is built as a JuMP
+expression rather than a variable with a defining equality — the solver never sees it, but
+the COI trajectory is still written to `angle_rel_COI.csv` for comparison against a
+COI-referenced run. The duals are exported separately as `dual_δ_ref_lower` /
+`dual_δ_ref_upper`.
 
 !!! note "Interpretation"
     When the upper bound in $\eqref{eq:delta-coi-box-5}$ binds, the dispatch is marginal with respect to machine $g$'s swing margin at time $t$. The corresponding dual (`dual_δ_COI_upper` in CSV export) prices **stability scarcity** at $(g,t)$ — not a nodal LMP. Sign conventions are on [7. Duals, KKT, and the economics](07_duals_economics.md).
 
 ### Optional speed corridor
 
-Set `DynModelConfig.constrain_Δω_COI = true` to add COI-referenced bounds on $\Delta\omega_g^t - \Delta\omega^{\mathrm{COI},t}$ (`ineq_const_kron_Δω_COI_generic!`). This is off by default.
+Set `DynModelConfig.constrain_Δω = true` to bound the speed deviation (`ineq_const_kron_Δω_COI_generic!`). This is off by default, and `bound_style_Δω` picks the reference: `:coi_box` bounds $\Delta\omega_g^t - \Delta\omega^{\mathrm{COI},t}$, `:abs` bounds the raw $\Delta\omega_g^t$ and builds no COI at all.
+
+The two are not the same constraint with the COI pinned at zero. $\Delta\omega^{\mathrm{COI}}$ is a free variable, so the COI box prices only the spread between machines; the absolute box additionally pins the fleet's common-mode drift from synchronous speed. That drift is set mostly by the accelerating power during the fault, which redispatch cannot remove, so an absolute band tighter than it renders the problem infeasible rather than expensive.
 
 The corridor need not be symmetric. `Δω_tol_pu` sets a symmetric half-width; `Δω_tol_pu_lower` and `Δω_tol_pu_upper` override each side independently as positive magnitudes, so
 
@@ -205,7 +240,7 @@ Generator/load trips (GL) use a **single** window from fault start to `t_end_sim
     2. **`Transient_Stability/CSV/generator_delta_omega.csv`** — verify trapezoidal consistency with the angle trace.
     3. Halve `t_step` and re-run; if the optimal dispatch changes, the coarse grid was masking swing peaks.
 
-    FULL_BUS runs need `network_form = FULL_BUS`, `mech_power_mode = USE_PM`, and `bound_style = :coi_box` (Example 4.1 on [page 4](04_network_kron_fullbus.md)).
+    FULL_BUS runs need `network_form = FULL_BUS`, `mech_power_mode = USE_PM`, and `bound_style_δ = :coi_box` (Example 4.1 on [page 4](04_network_kron_fullbus.md)).
 
 ---
 

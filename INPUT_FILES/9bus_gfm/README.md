@@ -24,7 +24,7 @@ RunConfig(
             gen_order = DQ_4TH,
             network_form = FULL_BUS,
             mech_power_mode = USE_PM,
-            bound_style = :coi_box,
+            bound_style_δ = :coi_box,
             fault = FaultConfig(fault_type = SC, contingency_id = 2),
         ),
     ),

@@ -10,7 +10,16 @@ Implementation: [`functions_4_TS_avr.jl`](https://github.com/alexupm95/TSCOPF.jl
 
 ## AVR (automatic voltage regulator) — `include_avr=true`, `gen_order=DQ_4TH`
 
-First-order exciter driving field voltage `E_fd` from terminal-voltage feedback, saturated by a smooth sqrt clamp. Parameters `T_exc`, `K_exc` come from `gen_dynamic_data_full.csv`; the clamp limits come from `TsBoundLimitsConfig.E_min_pu` / `E_max_pu` — the **same pair** that bounds the classical internal emf, so raising the field ceiling also widens that box.
+SEXS exciter driving field voltage `E_fd` from terminal-voltage feedback: an optional
+lead-lag stage `(1+s·Ta_exc)/(1+s·Tb_exc)` feeding a gain-lag `K_exc/(1+s·T_exc)`,
+saturated by a smooth sqrt clamp. Parameters `T_exc`, `K_exc`, `Ta_exc`, `Tb_exc`
+come from `gen_dynamic_data_full.csv`; the clamp limits come from
+`TsBoundLimitsConfig.E_min_pu` / `E_max_pu` — the **same pair** that bounds the classical
+internal emf, so raising the field ceiling also widens that box.
+
+`Ta_exc = Tb_exc = 0` bypasses the lead-lag (no variables, no rows) — every shipped
+fixture uses this. `Tb_exc = 0` with `Ta_exc > 0` is rejected at validation, as are a
+non-positive `T_exc` or `K_exc` (both are divided by).
 
 Pre-fault explicit `bound_E` on `E_fd` still applies when `TsBuilderConfig.bound_E=true` (same `[E_min, E_max]` box as the transient AVR clamp limits). Optional research boxes on `E_fd_unlim_*`, `V_ref`, `Pv_*`, and `Pm_*` use separate `bound_*` toggles (default off).
 
@@ -21,7 +30,7 @@ DynModelConfig(
     gen_order = DQ_4TH,
     network_form = FULL_BUS,
     mech_power_mode = USE_PM,
-    bound_style = :coi_box,
+    bound_style_δ = :coi_box,
     include_avr = true,
     # transient.gen_dynamic_filename = "gen_dynamic_data_full.csv"
 )
@@ -34,8 +43,10 @@ DynModelConfig(
 | `Transient_Stability/CSV/avr_V_ref.csv` | Constant set-point per generator (p.u.) |
 | `Transient_Stability/CSV/dq_E_fd_pu.csv` | Time-varying **saturated** `E_fd` trajectory |
 | `Transient_Stability/CSV/dq_E_fd_unlim_pu.csv` | **Pre-saturation** `E_fd_unlim` trajectory; the gap to `E_fd` is the active clamp |
-| `Transient_Stability/Figures/dq_E_fd_traj.svg`, `dq_E_fd_unlim.svg` | Both trajectories when `save_ts_plots=true` |
+| `Transient_Stability/CSV/dq_E_LL_pu.csv` | Lead-lag output `E_LL` (absent when every generator sets `Ta_exc=Tb_exc=0`) |
+| `Transient_Stability/Figures/dq_E_fd_traj.svg`, `dq_E_fd_unlim.svg`, `dq_E_LL.svg` | Trajectories when `save_ts_plots=true` |
 | `Transient_Stability/CSV_duals/dual_Vref_init.csv` | Dual of pre-fault exciter link |
+| `Transient_Stability/CSV_duals/dual_avr_leadlag.csv` | Dual of lead-lag stage (when present) |
 | `Transient_Stability/CSV_duals/dual_avr_E_fd.csv` | Dual of exciter ODE on `E_fd_unlim` (fault + post-fault) |
 | `Transient_Stability/CSV_duals/dual_avr_E_fd_sat.csv` | Dual of smooth field-voltage clamp |
 

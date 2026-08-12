@@ -265,11 +265,22 @@ The column layout follows the reference implementation's `Debug/` folder so a pa
 
 ## What stays synchronous-machine-only
 
-This is the modelling choice most likely to matter when interpreting results.
+This is the modelling choice most likely to matter when interpreting results, and since the corridors were split into independent $\delta$ and $\Delta\omega$ knobs it is no longer one choice but four.
 
-The centre of inertia, the $\delta$–COI corridor of Model 5.5, and the optional $\Delta\omega$–COI corridor all iterate **`sg_gens` only**. Converters are excluded from the COI weighted average (they have no $H$ to weight with) and are not subject to the angle or speed corridors. Nodal KCL, by contrast, injects **every** active unit through $\eqref{eq:gfm-injection-9}$.
+The dividing line is **inertia weighting**, not unit type. Anything that weights by $H$ has to iterate `sg_gens`, because `gen_dynamic_data_full.csv` has no converter rows at all — `DGEN_DYN.H[g]` for a converter id is a `BoundsError` on a small fleet and the wrong machine's inertia on a large one. Anything that only needs a comparable angle or speed can span the whole fleet. `_sg_ids` performs the narrowing inside the corridor dispatchers, so the builders hand over the full active set and each style decides for itself:
 
-So a mixed-fleet TSC-OPF constrains synchronous-machine coherency while letting converter angles move freely, and prices the stability constraint against the SG subset. That is defensible — converters do not lose synchronism in the pole-slip sense, and the first-swing criterion is a machine criterion — but it means the stability duals reported for a mixed fleet answer a narrower question than the SG-only case: what it costs to keep *the remaining machines* together, given whatever the converters do. Add converters and the SG corridor generally gets easier to satisfy, so the dual falls; that fall is a substitution effect, not evidence that stability got cheaper in an absolute sense.
+| Corridor | Spans | Why |
+|---|---|---|
+| $\delta^{\mathrm{COI}}$ series, `:coi_box`, `:swing_propagated` | SGs only | the reference is an $H$-weighted average |
+| $\delta$ `:highest_H`, `:ref_gen` | **SGs + converters** | $\delta_g - \delta_{\mathrm{ref}}$ needs no $H$ from $g$ |
+| $\Delta\omega$ `:coi_box` | SGs only | same weighted average |
+| $\Delta\omega$ `:abs` | **SGs + converters** | the band is on the raw deviation |
+
+Converter angles are directly comparable with rotor angles: one nodal KCL with no SG/GFM branch, the same Park convention, and a droop-defined $\Delta\omega$ that enters the angle integrator through the same $\omega_{\mathrm{syn}}$ the swing equation uses. Under `:highest_H` the *reference* is nevertheless always a machine — that style ranks by inertia — so a converter is bounded by the corridor without being eligible to define it. `:ref_gen` may name a converter explicitly, in which case it carries no row of its own like any other reference. Nodal KCL has always injected **every** active unit through $\eqref{eq:gfm-injection-9}$.
+
+The economic reading follows the same split. Under `:coi_box` a mixed-fleet TSC-OPF constrains synchronous-machine coherency while letting converter angles move freely, and prices the stability constraint against the SG subset: the duals answer a narrower question than the SG-only case — what it costs to keep *the remaining machines* together, given whatever the converters do. Add converters and the SG corridor generally gets easier to satisfy, so the dual falls; that fall is a substitution effect, not evidence that stability got cheaper in an absolute sense. Under `:highest_H` or `:ref_gen` that caveat lifts, because every synchronised unit now carries its own corridor rows and its own price. The converter duals arrive merged into the same families as the machine ones — `dual_delta_ref_*.csv` and `dual_Delta_Omega_abs_*.csv` simply gain a `Gen_*` column per converter — so a fleet-wide scarcity plot needs no join.
+
+`swing_debug.csv` stays SG-only on purpose: its columns ($H$, $D$, accelerating power, the swing duals) have no meaning for a droop converter. Converter corridor duals are in the dual CSVs above, and `angle_rel_ref.csv` already spans the whole fleet.
 
 ---
 

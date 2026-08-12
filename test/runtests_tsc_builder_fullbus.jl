@@ -40,7 +40,7 @@ function run_fullbus_acopf(; zip_load_p = ZIP_IMPEDANCE, zip_load_q = ZIP_IMPEDA
     ); dyn_model = DynModelConfig(
         network_form = FULL_BUS,
         mech_power_mode = USE_PM,
-        bound_style = :coi_box,
+        bound_style_δ = :coi_box,
         zip_load_p = zip_load_p,
         zip_load_q = zip_load_q,
         fault = FaultConfig(contingency_id = contingency_id),
@@ -58,7 +58,7 @@ end
         dyn = DynModelConfig(
             network_form = FULL_BUS,
             mech_power_mode = USE_PM,
-            bound_style = :coi_box,
+            bound_style_δ = :coi_box,
             zip_load_p = ZIP_IMPEDANCE,
             zip_load_q = ZIP_IMPEDANCE,
         )
@@ -78,7 +78,7 @@ end
         dyn = DynModelConfig(
             network_form = FULL_BUS,
             mech_power_mode = USE_PM,
-            bound_style = :coi_box,
+            bound_style_δ = :coi_box,
             zip_load_p = ZIP_CURRENT,
             zip_load_q = ZIP_IMPEDANCE,
         )
@@ -106,7 +106,7 @@ end
         @test dmd[:meta][:zip_load_p] ≈ collect(ZIP_IMPEDANCE)
         @test dmd[:meta][:zip_load_q] ≈ collect(ZIP_IMPEDANCE)
         @test dmd[:mech_power_mode] == USE_PM
-        @test dmd[:meta][:constrain_Δω_COI] == false
+        @test dmd[:meta][:constrain_Δω] == false
 
         @test haskey(dmd[:vars], :E)
         @test haskey(dmd[:vars], :P_m)

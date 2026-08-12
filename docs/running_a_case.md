@@ -77,7 +77,7 @@ cfg = RunConfig(
         dyn_model = DynModelConfig(
             network_form = FULL_BUS,
             mech_power_mode = USE_PM,
-            bound_style = :coi_box,
+            bound_style_δ = :coi_box,
             zip_load_p = (1.0, 0.0, 0.0),  # (Z, I, P) — active demand, constant impedance
             zip_load_q = (1.0, 0.0, 0.0),  # (Z, I, P) — reactive demand, constant impedance
             fault = FaultConfig(contingency_id = 2),
@@ -105,7 +105,7 @@ cfg = RunConfig(
             gen_order = DQ_4TH,
             network_form = FULL_BUS,
             mech_power_mode = USE_PM,
-            bound_style = :coi_box,
+            bound_style_δ = :coi_box,
             zip_load_p = (1.0, 0.0, 0.0),  # (Z, I, P) — active demand, constant impedance
             zip_load_q = (1.0, 0.0, 0.0),  # (Z, I, P) — reactive demand, constant impedance
             fault = FaultConfig(contingency_id = 2),
@@ -145,7 +145,7 @@ cfg = RunConfig(
         dyn_model = DynModelConfig(
             network_form = FULL_BUS,
             mech_power_mode = USE_PM,
-            bound_style = :coi_box,
+            bound_style_δ = :coi_box,
             zip_load_p = (1.0, 0.0, 0.0),  # (Z, I, P) — active demand, constant impedance
             zip_load_q = (1.0, 0.0, 0.0),  # (Z, I, P) — reactive demand, constant impedance
             fault = FaultConfig(fault_type = GL, gl_gen_ids = [3]),
@@ -438,7 +438,8 @@ constants).
 1. `Check_Coherence_Input_Data` — model/solver pairing  
 2. `validate_run_config!` — dispatch + transient consistency  
 3. `validate_dyn_config!` — `DynModelConfig` rules  
-4. `validate_fault_config!` — disturbance vs network (when `trans_stab=true`)
+4. `validate_fault_config!` — disturbance vs network (when `trans_stab=true`)  
+5. `validate_δ_reference!` — the reference machine of a `:highest_H` / `:ref_gen` δ corridor against the actual generator data (when `trans_stab=true`)
 
 ---
 

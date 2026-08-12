@@ -25,12 +25,33 @@ const INPUT_9BUS = fixture_case("9bus")
         @test df_full.Xd_tr ≈ [0.0608, 0.1198, 0.1813]
         @test df_full.Xd ≈ [0.2432, 0.4792, 0.7252]
         @test df_full.K_exc ≈ fill(100.0, 3)
+        # SEXS lead-lag: shipped as the 0/0 pass-through, so the block is bypassed.
+        @test df_full.Ta_exc ≈ zeros(3)
+        @test df_full.Tb_exc ≈ zeros(3)
         @test TSCOPF.has_full_machine_data(df_full)
+
+        # Every shipped fixture carries Ta_exc = Tb_exc = 0, so parsing them proves only
+        # that the columns exist. Read a file with the stage actually populated, in a
+        # deliberately shuffled column order, so a mis-spelled header in the ta_exc/tb_exc
+        # branches cannot hide behind a zero — it would surface as a silently absent
+        # column and a "missing Tb_exc" error on a file that plainly contains it.
+        mktempdir() do dir
+            write(joinpath(dir, "ll.csv"),
+                "bus;Eg;Xd_tr;Xq_tr;Xd;Xq;Td;Tq;H;D;Ra;Tb_exc;T_exc;Ta_exc;K_exc\n" *
+                "1;1.1;0.0608;0.0608;0.2432;0.2432;6.0;0.5;23.64;0;0.0;5.0;1;2.0;100\n" *
+                "2;1.1;0.1198;0.1198;0.4792;0.4792;6.0;0.5;6.4;0;0.0;4.0;1;1.5;120\n")
+            df_ll = TSCOPF.Read_Gen_Dynamic_Data(dir; filename = "ll.csv")
+            @test df_ll.Ta_exc ≈ [2.0, 1.5]
+            @test df_ll.Tb_exc ≈ [5.0, 4.0]
+            @test df_ll.K_exc ≈ [100.0, 120.0]
+            dyn_ll = DynModelConfig(gen_order = DQ_4TH, include_avr = true)
+            @test TSCOPF.has_required_dyn_columns(dyn_ll, df_ll)
+        end
 
         dyn_dq = DynModelConfig(gen_order = DQ_4TH, include_avr = false, include_governor = false)
         @test TSCOPF.has_required_dyn_columns(dyn_dq, df_full)
         df_dq_only = copy(df_full)
-        for col in (:T_exc, :K_exc, :R, :T1, :T2, :T3)
+        for col in (:T_exc, :K_exc, :Ta_exc, :Tb_exc, :R, :T1, :T2, :T3)
             df_dq_only[!, col] .= NaN
         end
         @test TSCOPF.has_full_machine_data(df_dq_only)
@@ -59,7 +80,7 @@ const INPUT_9BUS = fixture_case("9bus")
                 gen_dynamic_filename = fname,
                 dyn_model = DynModelConfig(
                     network_form = FULL_BUS, mech_power_mode = USE_PM,
-                    bound_style = :coi_box, include_governor = true)))
+                    bound_style_δ = :coi_box, include_governor = true)))
 
         dyn_gov = gov_cfg("gen_dynamic_data.csv").transient.dyn_model
         @test TSCOPF.missing_dyn_columns(dyn_gov, df_min) == [:R, :T1, :T2, :T3]
@@ -88,12 +109,53 @@ const INPUT_9BUS = fixture_case("9bus")
                 gen_dynamic_filename = "gen_dynamic_data_full.csv",
                 dyn_model = DynModelConfig(
                     gen_order = DQ_4TH, network_form = FULL_BUS,
-                    mech_power_mode = USE_PM, bound_style = :coi_box, include_avr = true)))
+                    mech_power_mode = USE_PM, bound_style_δ = :coi_box, include_avr = true)))
         df_no_avr = copy(df_full)
         df_no_avr[!, :T_exc] .= NaN
         @test TSCOPF.missing_dyn_columns(avr_cfg.transient.dyn_model, df_no_avr) == [:T_exc]
         @test_throws ArgumentError TSCOPF.validate_dyn_data!(avr_cfg, df_no_avr)
         @test TSCOPF.validate_dyn_data!(avr_cfg, df_full) === nothing
+
+        # SEXS lead-lag columns are required under include_avr, and the value rules reject
+        # a bare differentiator (Tb=0, Ta>0) and a negative time constant.
+        @test (:Ta_exc in TSCOPF.required_dyn_column_names(avr_cfg.transient.dyn_model))
+        @test (:Tb_exc in TSCOPF.required_dyn_column_names(avr_cfg.transient.dyn_model))
+        df_bad_ll = copy(df_full)
+        df_bad_ll.Ta_exc[1] = 1.0   # Tb stays 0 → improper lead
+        err_ll = try
+            TSCOPF.validate_dyn_data!(avr_cfg, df_bad_ll); nothing
+        catch e; e; end
+        @test err_ll isa ArgumentError
+        @test occursin("differentiator", err_ll.msg)
+        @test occursin("Ta_exc=Tb_exc=0", err_ll.msg)
+        df_neg = copy(df_full)
+        df_neg.Tb_exc[2] = -1.0
+        @test_throws ArgumentError TSCOPF.validate_dyn_data!(avr_cfg, df_neg)
+        df_ok_ll = copy(df_full)
+        df_ok_ll.Ta_exc .= 2.0
+        df_ok_ll.Tb_exc .= 5.0
+        @test TSCOPF.validate_dyn_data!(avr_cfg, df_ok_ll) === nothing
+
+        # Gain-lag parameters must be strictly positive. Presence-and-finiteness accepted a
+        # zero, which reaches the model as `c = Δt/(2·T_exc) = Inf`, or — for K_exc, the
+        # quieter failure — as a pre-fault link pinning E_fd to zero with no voltage
+        # feedback and an Inf lead-lag warm start.
+        df_zero_T = copy(df_full)
+        df_zero_T.T_exc[1] = 0.0
+        err_T = try
+            TSCOPF.validate_dyn_data!(avr_cfg, df_zero_T); nothing
+        catch e; e; end
+        @test err_T isa ArgumentError
+        @test occursin("non-positive AVR gain-lag", err_T.msg)
+        df_zero_K = copy(df_full)
+        df_zero_K.K_exc[3] = 0.0
+        @test_throws ArgumentError TSCOPF.validate_dyn_data!(avr_cfg, df_zero_K)
+        df_neg_K = copy(df_full)
+        df_neg_K.K_exc[2] = -10.0
+        @test_throws ArgumentError TSCOPF.validate_dyn_data!(avr_cfg, df_neg_K)
+        # The gate is `include_avr`: a DQ-only run may still carry NaN in these columns,
+        # which is what the fixtures above rely on.
+        @test TSCOPF.validate_dyn_data!(gov_cfg("gen_dynamic_data_full.csv"), df_zero_T) === nothing
 
         # No-op off the TSC path; explicit throw when a TSC run carries no machine data.
         @test TSCOPF.validate_dyn_data!(RunConfig(), nothing) === nothing
@@ -121,7 +183,7 @@ const INPUT_9BUS = fixture_case("9bus")
 
             # Without the governor those same blanks are irrelevant — nothing reads them.
             dyn_plain = DynModelConfig(network_form = FULL_BUS, mech_power_mode = USE_PM,
-                                       bound_style = :coi_box)
+                                       bound_style_δ = :coi_box)
             @test isempty(TSCOPF.missing_dyn_columns(dyn_plain, df_partial))
         end
     end
@@ -143,7 +205,7 @@ const INPUT_9BUS = fixture_case("9bus")
         # REE style: constant-current P, constant-admittance Q. Different vectors, each
         # summing to 1 — valid on FULL_BUS.
         ree_zip = reconfigure_dyn(tsc_run_config(); dyn_model = DynModelConfig(
-            network_form = FULL_BUS, mech_power_mode = USE_PM, bound_style = :coi_box,
+            network_form = FULL_BUS, mech_power_mode = USE_PM, bound_style_δ = :coi_box,
             zip_load_p = (0.0, 1.0, 0.0), zip_load_q = (1.0, 0.0, 0.0)))
         @test validate_dyn_config!(ree_zip) === nothing
 
@@ -157,7 +219,7 @@ const INPUT_9BUS = fixture_case("9bus")
 
         bad_gov_kron = reconfigure_dyn(tsc_run_config();
             dyn_model = DynModelConfig(include_governor = true, mech_power_mode = USE_PM,
-                network_form = KRON_REDUCED, bound_style = :coi_box))
+                network_form = KRON_REDUCED, bound_style_δ = :coi_box))
         @test_throws ArgumentError validate_dyn_config!(bad_gov_kron)
 
         bad_dcopf_dq = reconfigure_dyn(tsc_run_config(type_model = "DCOPF");
@@ -167,34 +229,88 @@ const INPUT_9BUS = fixture_case("9bus")
         ok_future = reconfigure_dyn(tsc_run_config();
             dyn_model = DynModelConfig(
                 network_form = FULL_BUS, mech_power_mode = USE_PM,
-                include_governor = true, bound_style = :coi_box))
+                include_governor = true, bound_style_δ = :coi_box))
         @test validate_dyn_config!(ok_future) === nothing
 
         bad_Δω_tol = reconfigure_dyn(tsc_run_config();
-            dyn_model = DynModelConfig(constrain_Δω_COI = true, Δω_tol_pu = 0.0))
+            dyn_model = DynModelConfig(constrain_Δω = true, Δω_tol_pu = 0.0))
         @test_throws ArgumentError validate_dyn_config!(bad_Δω_tol)
 
         ok_Δω_COI = reconfigure_dyn(tsc_run_config();
-            dyn_model = DynModelConfig(constrain_Δω_COI = true, Δω_tol_pu = 0.5))
+            dyn_model = DynModelConfig(constrain_Δω = true, Δω_tol_pu = 0.5))
         @test validate_dyn_config!(ok_Δω_COI) === nothing
 
         ok_Δω_asym = reconfigure_dyn(tsc_run_config();
-            dyn_model = DynModelConfig(constrain_Δω_COI = true,
+            dyn_model = DynModelConfig(constrain_Δω = true,
                 Δω_tol_pu_lower = 0.05, Δω_tol_pu_upper = 0.03))
         @test validate_dyn_config!(ok_Δω_asym) === nothing
 
         for bad in (-0.1, 0.0)
             bad_lo = reconfigure_dyn(tsc_run_config();
-                dyn_model = DynModelConfig(constrain_Δω_COI = true, Δω_tol_pu_lower = bad))
+                dyn_model = DynModelConfig(constrain_Δω = true, Δω_tol_pu_lower = bad))
             @test_throws ArgumentError validate_dyn_config!(bad_lo)
             bad_hi = reconfigure_dyn(tsc_run_config();
-                dyn_model = DynModelConfig(constrain_Δω_COI = true, Δω_tol_pu_upper = bad))
+                dyn_model = DynModelConfig(constrain_Δω = true, Δω_tol_pu_upper = bad))
             @test_throws ArgumentError validate_dyn_config!(bad_hi)
         end
 
         bad_pm_swing = reconfigure_dyn(tsc_run_config();
-            dyn_model = DynModelConfig(mech_power_mode = USE_PM, bound_style = :swing_propagated))
+            dyn_model = DynModelConfig(mech_power_mode = USE_PM, bound_style_δ = :swing_propagated))
         @test_throws ArgumentError validate_dyn_config!(bad_pm_swing)
+
+        # --- stability corridor knobs -------------------------------------------------
+        for style in (:coi_box, :highest_H, :swing_propagated)
+            ok_style = reconfigure_dyn(tsc_run_config();
+                dyn_model = DynModelConfig(bound_style_δ = style))
+            @test validate_dyn_config!(ok_style) === nothing
+        end
+
+        bad_δ_style = reconfigure_dyn(tsc_run_config();
+            dyn_model = DynModelConfig(bound_style_δ = :nonsense))
+        @test_throws ArgumentError validate_dyn_config!(bad_δ_style)
+
+        bad_Δω_style = reconfigure_dyn(tsc_run_config();
+            dyn_model = DynModelConfig(constrain_Δω = true, bound_style_Δω = :nonsense))
+        @test_throws ArgumentError validate_dyn_config!(bad_Δω_style)
+
+        ok_Δω_abs = reconfigure_dyn(tsc_run_config();
+            dyn_model = DynModelConfig(constrain_Δω = true, bound_style_Δω = :abs))
+        @test validate_dyn_config!(ok_Δω_abs) === nothing
+
+        # :ref_gen without an id is a config error, catchable with no system data.
+        bad_ref_missing = reconfigure_dyn(tsc_run_config();
+            dyn_model = DynModelConfig(bound_style_δ = :ref_gen))
+        @test_throws ArgumentError validate_dyn_config!(bad_ref_missing)
+
+        bad_ref_zero = reconfigure_dyn(tsc_run_config();
+            dyn_model = DynModelConfig(bound_style_δ = :ref_gen, δ_ref_gen_id = 0))
+        @test_throws ArgumentError validate_dyn_config!(bad_ref_zero)
+
+        ok_ref = reconfigure_dyn(tsc_run_config();
+            dyn_model = DynModelConfig(bound_style_δ = :ref_gen, δ_ref_gen_id = 2))
+        @test validate_dyn_config!(ok_ref) === nothing
+
+        # A transient run with neither corridor is a simulation bolted onto an OPF.
+        bad_no_corridor = reconfigure_dyn(tsc_run_config();
+            dyn_model = DynModelConfig(constrain_δ = false, constrain_Δω = false))
+        @test_throws ArgumentError validate_dyn_config!(bad_no_corridor)
+
+        ok_speed_only = reconfigure_dyn(tsc_run_config();
+            dyn_model = DynModelConfig(constrain_δ = false, constrain_Δω = true))
+        @test validate_dyn_config!(ok_speed_only) === nothing
+
+        # bound_δCOI_* bounds the δ_COI *variable*, which a machine-referenced run does
+        # not create. The attach helpers skip absent variables silently, so this must be
+        # caught in validation or the request would evaporate unnoticed.
+        bad_δCOI_box = tsc_run_config(
+            builder = TsBuilderConfig(bound_δCOI_tf = true),
+            dyn_model = DynModelConfig(bound_style_δ = :highest_H))
+        @test_throws ArgumentError validate_run_config!(bad_δCOI_box)
+
+        ok_δCOI_box = tsc_run_config(
+            builder = TsBuilderConfig(bound_δCOI_tf = true),
+            dyn_model = DynModelConfig(bound_style_δ = :coi_box))
+        @test validate_run_config!(ok_δCOI_box) === nothing
 
         # FULL_BUS needs P_m as its own state. The builder also throws, but only after
         # the warm-start ACOPF has been solved — this rule fires before any solve.
@@ -211,7 +327,7 @@ const INPUT_9BUS = fixture_case("9bus")
 
         ok_fullbus_be = reconfigure_dyn(tsc_run_config();
             dyn_model = DynModelConfig(network_form = FULL_BUS, mech_power_mode = USE_PM,
-                bound_style = :coi_box, ode_first_step = :backward_euler))
+                bound_style_δ = :coi_box, ode_first_step = :backward_euler))
         @test validate_dyn_config!(ok_fullbus_be) === nothing
     end
 
@@ -228,18 +344,18 @@ const INPUT_9BUS = fixture_case("9bus")
         @test m_dc.mech_power_mode == USE_PG
 
         m_pm = TSCOPF.dynamic_gen_model(
-            DynModelConfig(mech_power_mode = USE_PM, constrain_Δω_COI = true, bound_style = :coi_box);
+            DynModelConfig(mech_power_mode = USE_PM, constrain_Δω = true, bound_style_δ = :coi_box);
             linearize = true,
         )
         @test m_pm.mech_power_mode == USE_PM
-        @test m_pm.constrain_Δω_COI
+        @test m_pm.constrain_Δω
         # Unset overrides → symmetric pair from Δω_tol_pu.
         @test m_pm.Δω_tol == (-0.5, 0.5)
 
         # Asymmetric overrides are positive magnitudes below/above COI.
         m_asym = TSCOPF.dynamic_gen_model(
-            DynModelConfig(mech_power_mode = USE_PM, bound_style = :coi_box,
-                constrain_Δω_COI = true, Δω_tol_pu_lower = 0.05, Δω_tol_pu_upper = 0.03);
+            DynModelConfig(mech_power_mode = USE_PM, bound_style_δ = :coi_box,
+                constrain_Δω = true, Δω_tol_pu_lower = 0.05, Δω_tol_pu_upper = 0.03);
             linearize = true,
         )
         @test m_asym.Δω_tol == (-0.05, 0.03)
@@ -250,19 +366,19 @@ const INPUT_9BUS = fixture_case("9bus")
             DynModelConfig(Δω_tol_pu_upper = -0.2))
 
         m_fb = TSCOPF.dynamic_gen_model(
-            DynModelConfig(network_form = FULL_BUS, mech_power_mode = USE_PM, bound_style = :coi_box);
+            DynModelConfig(network_form = FULL_BUS, mech_power_mode = USE_PM, bound_style_δ = :coi_box);
             linearize = false,
         )
         @test m_fb isa TSCOPF.ClassicalFullBusModel
         @test TSCOPF.network_form(m_fb) == FULL_BUS
         @test m_fb.mech_power_mode == USE_PM
-        @test m_fb.bound_style == :coi_box
+        @test m_fb.bound_style_δ == :coi_box
 
         @test_throws ArgumentError TSCOPF.dynamic_gen_model(
             DynModelConfig(network_form = FULL_BUS); linearize = true)
         m_dq = TSCOPF.dynamic_gen_model(
             DynModelConfig(gen_order = DQ_4TH, network_form = FULL_BUS,
-                mech_power_mode = USE_PM, bound_style = :coi_box);
+                mech_power_mode = USE_PM, bound_style_δ = :coi_box);
             linearize = false)
         @test m_dq isa TSCOPF.DqFullBusModel
         @test TSCOPF.gen_order(m_dq) == DQ_4TH
@@ -273,7 +389,7 @@ const INPUT_9BUS = fixture_case("9bus")
         @test tc.dyn_model.gen_order == CLASSICAL_2ND
         @test tc.dyn_model.network_form == KRON_REDUCED
         @test tc.dyn_model.mech_power_mode == USE_PG
-        @test !tc.dyn_model.constrain_Δω_COI
+        @test !tc.dyn_model.constrain_Δω
         @test tc.gen_dynamic_filename == "gen_dynamic_data.csv"
         @test tc.gfm_dynamic_filename == "gfm_dynamic_data.csv"
         @test !tc.dyn_model.include_avr
@@ -336,7 +452,7 @@ const INPUT_9BUS = fixture_case("9bus")
             trans_stab = true,
             dispatch = DispatchConfig(type_model = "ACOPF"),
             transient = TransientConfig(dyn_model = DynModelConfig(
-                network_form = FULL_BUS, mech_power_mode = USE_PM, bound_style = :coi_box)),
+                network_form = FULL_BUS, mech_power_mode = USE_PM, bound_style_δ = :coi_box)),
             save_warmstart_dispatch = true,
         )
         @test validate_run_config!(cfg_fullbus) === nothing

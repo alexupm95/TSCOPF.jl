@@ -160,7 +160,7 @@ const fault_cfg = FaultConfig(
 const dyn_model_cfg = DynModelConfig(
     gen_order               = CLASSICAL_2ND,    # constant EMF behind X'd, two states (δ, Δω); DQ_4TH would require FULL_BUS
     network_form            = KRON_REDUCED,     # eliminate every non-machine bus into Y_red, rebuilt after the outage
-    mech_power_mode         = USE_PM,           # USE_PM = P_m is its own variable, which forces bound_style = :coi_box
+    mech_power_mode         = USE_PM,           # USE_PM = P_m is its own variable, which forces bound_style_δ = :coi_box
     dq_speed_dev_in_algebra = true,             # (1+Δω) in the stator algebra; DQ_4TH only, so inert here
     include_avr             = false,            # false is mandatory here: the AVR requires DQ_4TH
     include_governor        = false,            # false is mandatory here: the governor requires FULL_BUS
@@ -171,9 +171,9 @@ const dyn_model_cfg = DynModelConfig(
     # (Z, I, P) splits — IGNORED on KRON_REDUCED (loads fold into Y_red).
     zip_load_p              = (1.0, 0.0, 0.0),  # active demand: 100 % constant impedance, 0 % current, 0 % power
     zip_load_q              = (1.0, 0.0, 0.0),  # reactive demand: same split, set independently of the active one
-    bound_style             = :coi_box,         # required by USE_PM: the stability limit is a direct corridor around the COI
-    constrain_Δω_COI        = false,            # false = no corridor on Δω_i − Δω_COI; true builds the frequency box
-    Δω_tol_pu               = 0.5,              # half-width of that Δω corridor [pu]; read only when constrain_Δω_COI = true
+    bound_style_δ             = :coi_box,         # required by USE_PM: the stability limit is a direct corridor around the COI
+    constrain_Δω        = false,            # false = no corridor on Δω_i − Δω_COI; true builds the frequency box
+    Δω_tol_pu               = 0.5,              # half-width of that Δω corridor [pu]; read only when constrain_Δω = true
     Δω_tol_pu_lower         = nothing,          # nothing = reuse Δω_tol_pu below the COI
     Δω_tol_pu_upper         = nothing,          # nothing = reuse Δω_tol_pu above the COI
     fault                   = fault_cfg,        # the FaultConfig instance built above

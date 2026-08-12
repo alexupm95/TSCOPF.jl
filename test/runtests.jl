@@ -66,6 +66,10 @@ include(joinpath(@__DIR__, "runtests_uc.jl"))
 
 # --- heavy tier: DQ_4TH, controls, disturbances, numeric pins ----------------
 if RUN_HEAVY
+    # Eight Kron TSC solves: every δ/Δω corridor style, plus the reference-relative
+    # exports. The config-level corridor validation is free and lives in the fast gate
+    # (runtests_fast_unit.jl); only the structural and export checks need a solve.
+    include(joinpath(@__DIR__, "runtests_delta_reference.jl"))
     include(joinpath(@__DIR__, "runtests_dq_fullbus.jl"))
     include(joinpath(@__DIR__, "runtests_gfm_transient.jl"))
     include(joinpath(@__DIR__, "runtests_fullbus_gld.jl"))

@@ -155,20 +155,23 @@ Pre-fault init equalities (`eq_const_P_init` / `Q_init` / `Pm_init`) and fault/p
 | Generator order | `gen_order` | `CLASSICAL_2ND` | `DQ_4TH` = 4th-order dq (FULL_BUS) |
 | Network form | `network_form` | `KRON_REDUCED` | `FULL_BUS` for full Ybus TSC-ACOPF |
 | Mechanical power in swing | `mech_power_mode` | `USE_PG` | `USE_PM` required for FULL_BUS |
-| Include AVR | `include_avr` | `false` | first-order exciter; requires `DQ_4TH` + full CSV (`T_exc,K_exc`) |
+| Include AVR | `include_avr` | `false` | SEXS exciter (lead-lag + gain-lag); requires `DQ_4TH` + full CSV (`T_exc,K_exc,Ta_exc,Tb_exc`; `0;0` bypasses lead-lag) |
 | Include governor | `include_governor` | `false` | TGOV1 turbine governor; requires `USE_PM` + `FULL_BUS` (classical or DQ_4TH) |
 | Governor valve limiter | `governor_limiter` | `GOV_NO_LIMIT` | `GOV_NO_LIMIT` / `GOV_SMOOTH` / `GOV_HARD_BOUND` (only when `include_governor`) |
 | Allow GFM fleet | `allow_gfm` | `false` | Separate `gfm_dynamic_data.csv`; requires `DQ_4TH` + `FULL_BUS` (G2: full transient GFM) |
 | ZIP load split `(Z,I,P)` — active | `zip_load_p` | `(1,0,0)` | impedance / current / power fractions; must sum to 1; default = constant impedance |
 | ZIP load split `(Z,I,P)` — reactive | `zip_load_q` | `(1,0,0)` | independent of `zip_load_p`; must sum to 1 (e.g. REE: `zip_load_p=(0,1,0)`, `zip_load_q=(1,0,0)`) |
-| δ stability bound style | `bound_style` | `:swing_propagated` | `:coi_box` required by USE_PM / DQ_4TH; both forms build on every network form |
-| Box bounds on Δω − Δω_COI | `constrain_Δω_COI` | `false` | |
-| Δω_COI tolerance [p.u.] | `Δω_tol_pu` | `0.5` | Symmetric half-width when lower/upper unset; requires `constrain_Δω_COI=true` |
-| Below Δω_COI [p.u.] | `Δω_tol_pu_lower` | `nothing` | Optional; defaults to `Δω_tol_pu` |
-| Above Δω_COI [p.u.] | `Δω_tol_pu_upper` | `nothing` | Optional; defaults to `Δω_tol_pu` |
+| Build the δ corridor | `constrain_δ` | `true` | At least one of `constrain_δ` / `constrain_Δω` must be true |
+| δ corridor reference | `bound_style_δ` | `:swing_propagated` | `:coi_box` \| `:highest_H` \| `:ref_gen`; USE_PM / DQ_4TH reject `:swing_propagated`; all build on every network form. The machine-referenced styles bound GFM converters too; the COI-referenced ones stay SG-only |
+| δ reference machine id | `δ_ref_gen_id` | `nothing` | Required by `:ref_gen`; validated against the system data before the warm start. May name a GFM unit — `:highest_H` may not, since it ranks by `H` |
+| Build the Δω corridor | `constrain_Δω` | `false` | |
+| Δω corridor reference | `bound_style_Δω` | `:coi_box` | `:abs` bounds the raw Δω, forms no COI, and spans GFM converters; `:coi_box` is SG-only |
+| Δω tolerance [p.u.] | `Δω_tol_pu` | `0.5` | Symmetric half-width when lower/upper unset; requires `constrain_Δω=true` |
+| Below reference [p.u.] | `Δω_tol_pu_lower` | `nothing` | Optional; defaults to `Δω_tol_pu` |
+| Above reference [p.u.] | `Δω_tol_pu_upper` | `nothing` | Optional; defaults to `Δω_tol_pu` |
 | Disturbance spec | `fault` | `FaultConfig()` | See §5 |
 
-**Validation:** `validate_dyn_config!(cfg::RunConfig)` (reads `cfg.transient.dyn_model` when `trans_stab=true`).
+**Validation:** `validate_dyn_config!(cfg::RunConfig)` (reads `cfg.transient.dyn_model` when `trans_stab=true`), plus `validate_δ_reference!(cfg, DGEN, DGEN_DYN, DGFM)` for the machine-referenced δ styles, which needs the system data and so runs from `run_case!`.
 
 ---
 
