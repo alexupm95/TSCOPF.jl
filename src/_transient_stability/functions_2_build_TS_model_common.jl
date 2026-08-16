@@ -183,41 +183,21 @@ function assemble_dynamic_model!(
     )
 end
 
-"""Write the human-readable dynamic-model dump (TXT) for the selected model type."""
-function export_dynamic_model!(
-    gen_model::ClassicalFullBusModel,
-    model::Model,
-    path_names::OrderedDict{Symbol, String},
-    dyn_model_dict::OrderedDict{Symbol, Any},
-)
-    Export_Dynamic_Model_fullbus(model, path_names, dyn_model_dict)
-    Export_Variable_Bounds!(model, path_names[:pf_TS])
-    return nothing
-end
+"""
+Write the human-readable dynamic-model dump (TXT).
 
+One method for every model type. `Export_Dynamic_Model!` iterates the model dictionary's
+own containers, so the Kron / Kron-linear / FULL_BUS / DQ / GFM differences are already
+expressed by what each builder registered — there is nothing left for a dispatch on
+`gen_model` to decide.
+"""
 function export_dynamic_model!(
-    gen_model::DqFullBusModel,
+    gen_model::AbstractDynamicGenModel,
     model::Model,
     path_names::OrderedDict{Symbol, String},
     dyn_model_dict::OrderedDict{Symbol, Any},
 )
-    Export_Dynamic_Model_fullbus(model, path_names, dyn_model_dict)
-    Export_Variable_Bounds!(model, path_names[:pf_TS])
-    return nothing
-end
-
-# Export for Kron models
-function export_dynamic_model!(
-    gen_model::ClassicalKronModel,
-    model::Model,
-    path_names::OrderedDict{Symbol, String},
-    dyn_model_dict::OrderedDict{Symbol, Any},
-)
-    if gen_model.linearize
-        Export_Dynamic_Model_tsredlinear(model, path_names, dyn_model_dict)
-    else
-        Export_Dynamic_Model_tsred(model, path_names, dyn_model_dict)
-    end
+    Export_Dynamic_Model!(model, path_names, dyn_model_dict)
     Export_Variable_Bounds!(model, path_names[:pf_TS])
     return nothing
 end

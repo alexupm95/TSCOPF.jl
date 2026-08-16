@@ -91,6 +91,15 @@ Base.@kwdef struct RunConfig
     # the run folder, next to input_parameters.txt. Any readable path works (a
     # sweep driver can archive its own driver file).
     run_script::Union{Nothing, String} = nothing
+    # Called once per run with the model still assembled, immediately before
+    # `release_solver_backend!` invalidates every VariableRef/ConstraintRef. Receives
+    # keyword arguments only (`cfg`, `sys`, `path_names`, `model`, `opf_dict`,
+    # `dyn_model_dict`, `dyn_parameters_dict`, `status`, `status_solved`, `obj_MVA`,
+    # `t_build`, `t_solve`), so a hook written today keeps working when more data is
+    # handed over later — declare it as `f(; kwargs...)` and pick out what it needs.
+    # `nothing` = off. Exceptions are not caught: an export that silently failed is
+    # worse than a run that stopped and said so.
+    post_solve_hook::Union{Nothing, Function} = nothing
 
     # --- avenue 1: steady-state dispatch -------------------------------------
     dispatch::DispatchConfig = DispatchConfig()
@@ -1115,6 +1124,25 @@ function run_case!(cfg::RunConfig, sys::SystemData,
     # a reference that throws on `JuMP.value`. Broadcast keeps the shape for the
     # scalar and container forms alike.
     obj_MVA_value = status_solved ? JuMP.value.(obj_function_MVA) : nothing
+
+    # --- machine-readable run description ------------------------------------
+    # Written unconditionally, failed runs included: `[status]` then records why the
+    # folder is empty. This is the only place `load_factor` and the resolved δ
+    # reference / SG-GFM partition are archived in a form a script can read back.
+    Save_Run_Manifest!(path_names, cfg, sys;
+        opf_dict=opf_dict, dyn_model_dict=dyn_model_dict,
+        dyn_parameters_dict=dyn_parameters_dict,
+        status=status_model, obj_MVA=obj_MVA_value,
+        t_build=t_build, t_solve=t_solve)
+
+    # Last chance to read the assembled model: everything below invalidates it.
+    if cfg.post_solve_hook !== nothing
+        cfg.post_solve_hook(; cfg=cfg, sys=sys, path_names=path_names, model=model,
+            opf_dict=opf_dict, dyn_model_dict=dyn_model_dict,
+            dyn_parameters_dict=dyn_parameters_dict,
+            status=status_model, status_solved=status_solved,
+            obj_MVA=obj_MVA_value, t_build=t_build, t_solve=t_solve)
+    end
 
     release_solver_backend!(model)
     model = nothing

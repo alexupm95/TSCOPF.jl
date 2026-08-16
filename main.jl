@@ -42,6 +42,10 @@ cfg = RunConfig(
     save_matrices       = true,    # Ybus/Bbus XLSX + fault matrices
     save_ts_plots       = true,    # trajectory SVG figures (Plots.jl)
     save_optim_matrices = true,    # auto-forced false for TSC (warning printed)
+    # Human-readable provenance: a byte-for-byte copy of this file lands next to
+    # input_parameters.txt. The machine-readable twin (every resolved field, not just
+    # the ones typed here) is run_manifest.toml, written on every run.
+    run_script          = @__FILE__,
 
     # --- avenue 1: steady-state ACOPF (matrix form) --------------------------
     dispatch = DispatchConfig(

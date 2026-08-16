@@ -64,7 +64,7 @@ The slack bus fixes the voltage-angle gauge. Generator active/reactive limits, b
     Branch flow limits can be enforced either through explicit branch-flow variables or through matrix balance plus angle-difference inequalities, depending on `DispatchConfig` toggles. The economic reading is the same: a binding limit raises the marginal cost of serving load downstream.
 
 !!! note "Interpretation (LMP from AC balance)"
-    Stationarity with respect to $P_g$ at bus $k(g)$ ties the marginal fuel cost to the balance multiplier. TSCOPF exports $\lambda_k$ from the primal and reports the **economic price** as $\pi_k = -\lambda_k$. That sign flip is deliberate and consistent across steady-state and transient exports; see [7. Duals, KKT, and the economics](07_duals_economics.md).
+    Stationarity with respect to $P_g$ at bus $k(g)$ ties the marginal fuel cost to the balance multiplier. TSCOPF exports $\lambda_k$ from the primal, and the **economic price is $\pi_k = +\lambda_k$** — no flip. The balance is coded $P_{g(k)} - P_d(k) - \sum(\cdot) = 0$ and JuMP's Lagrangian carries $-\lambda$, so the two signs cancel. This holds for both steady-state and transient primal exports. The **explicit dual LP** (`Dispatch_Dual/`) is the one object with the opposite convention; see [7. Duals, KKT, and the economics](07_duals_economics.md).
 
 !!! tip "Example 2.1 · IEEE 9-bus, plain ACOPF"
     A dispatch-only run with `trans_stab = false` and `dispatch.type_model = "ACOPF"` solves Model 2.1–2.2 on the 9-bus case at `load_factor = 1.5`. Ipopt typically converges in a few seconds; primal dispatch lands in `RESULTS/.../Dispatch/`.
@@ -105,7 +105,7 @@ DCOPF drops reactive power and voltage magnitude, linearises the network around 
 
     They coincide when $r_{km}=0$. With `POWERMODELS`, in-house DC-OPF matches PowerModels `DCPPowerModel` on primal quantities (see `test/runtests_powermodels_crosscheck.jl`).
 
-Angle limits and optional branch angle-difference limits replace thermal constraints. The same LMP convention applies: $\pi_k = -\lambda_k$ on $\eqref{eq:dcopf-balance}$.
+Angle limits and optional branch angle-difference limits replace thermal constraints. The same LMP convention applies: $\pi_k = +\lambda_k$ on $\eqref{eq:dcopf-balance}$ for the primal duals.
 
 ---
 
@@ -123,7 +123,7 @@ ED collapses the network to a single active-power balance (no angles, no branche
     \end{align}
     ```
 
-    Requires `cost_type = "linear"`. A scalar balance multiplier $\lambda$ gives the system marginal price $\pi_{\mathrm{SMP}} = -\lambda$.
+    Requires `cost_type = "linear"`. A scalar balance multiplier $\lambda$ gives the system marginal price $\pi_{\mathrm{SMP}} = +\lambda$ from the primal duals. The explicit ED dual LP reports the same price from its own multiplier, which carries the opposite sign — see [7. Duals, KKT, and the economics](07_duals_economics.md).
 
 ---
 

@@ -68,7 +68,7 @@ Runs on every push and PR.
 | `runtests_tsc_builder_kron.jl` | Kron builder: mandatory equalities, δ-COI toggles, GL trip, OB open branch | Kron |
 | `runtests_tsc_builder_fullbus.jl` | ZIP factory checks + **one** FULL_BUS solve (structure, CSV exports, dual registry) | 1 FULL_BUS |
 | `runtests_controls.jl` | AVR/governor validation, factory, valve limiters, field clamp | none in this tier |
-| `runtests_plots_ext.jl` | `TSCOPFPlotsExt` load + SVG export (needs `GKSwstype=100` on headless runners) | none |
+| `runtests_plots_ext.jl` | `TSCOPFPlotsExt` load + SVG export, machine-referenced δ figure, corridor dual SVGs per family (needs `GKSwstype=100` on headless runners) | none |
 | `runtests_uc.jl` | UC MILP + restricted-pricing duals — self-skips without a Gurobi licence | MILP |
 
 ## Tier 2 — heavy (`TSCOPF_RUN_HEAVY=true`)

@@ -204,6 +204,7 @@ which uses the flat `RESULTS/` tree with the same conditional rules).
 |---|---|---|
 | `Inputs/` | always | run start (`Copy_Input_CSVs_To_Results!`) |
 | `<script>.jl` (run-folder root, not a subfolder) | `run_script` set | run start — byte-for-byte copy of the `.jl` file that built the `RunConfig`, written before the solve so it survives a failure |
+| `run_manifest.toml` (run-folder root) | always | after the solve, before the model is released — the machine-readable description of the run (see below) |
 | `Dispatch/CSV/` | always | successful solve (primal dispatch CSV/XLSX/TXT) |
 | `Dispatch/model_details.txt`, `Dispatch/model_summary.txt` | always | at model build (objective, variables, constraints). Box limits appear as `ineq_const` rows when `bound_encoding = CONSTRAINT`, or as equivalent ≤-form lines from `bound_manifest` when `bound_encoding = VARIABLE`. |
 | `Dispatch/CSV_duals/` | `save_duals=true` | successful solve (JuMP primal dual CSV + `Dispatch_Duals.xlsx`) |
@@ -224,7 +225,7 @@ which uses the flat `RESULTS/` tree with the same conditional rules).
 | `Transient_Stability/CSV/gfm_*.csv` | `allow_gfm=true` | converter states, `gfm_current_loading.csv`, and `gfm_setpoints.csv` (pre-fault $V_{set}$ and the $t=0$ filter states) |
 | `Transient_Stability/CSV_duals/` | `trans_stab=true` and `save_duals=true` | successful TSC solve **with a dual certificate** (dynamic dual CSV/XLSX) |
 | `Transient_Stability/Figures/` | `trans_stab=true` and `save_ts_plots=true` | successful TSC solve (trajectory SVG plots) |
-| `Transient_Stability/Figures_Duals/` | `trans_stab=true`, `save_duals=true` **and** `save_ts_plots=true` | δ-COI stability-constraint dual SVGs, one file per generator and bound side |
+| `Transient_Stability/Figures_Duals/` | `trans_stab=true`, `save_duals=true` **and** `save_ts_plots=true` | stability-corridor dual SVGs, one file per generator and bound side, for whichever corridors the run built: `Duals Trans. Stab. Const G<id> <side>.svg` for the δ corridor (COI- or machine-referenced) and `Duals Trans. Stab. Const Domega G<id> <side>.svg` for the Δω corridor |
 | `Transient_Stability/CSV/Debug/` | `trans_stab=true` and `save_ts_debug_csv=true` | per-(window, gen, step) diagnostics: value, margin and dual on one row |
 | `Optim_Matrices/` | `save_optim_matrices=true` and steady-state dispatch | successful solve (Jacobian/Hessian/gradient COO CSV). Row count depends on `bound_encoding`: `VARIABLE` mode has fewer inequality rows because box limits are not explicit `@constraint`s. |
 
@@ -250,6 +251,33 @@ primal / dual status of the solve that produced them.
 **Known limit.** The Kron-linear path (TSC-DCOPF) has no reactive-power variable or
 expression, so `electrical_reactive_power.csv` is absent there by construction — not a
 missing export.
+
+### 8.0 `run_manifest.toml` — reading a run back with a script
+
+`input_parameters.txt` is written for people, and it does not record `load_factor`;
+`Inputs/bus_data.csv` archives the demand *before* that scaling is applied
+(`load_system` scales after the copy). A `run_script` copy only contains the fields
+someone typed. So none of the three lets a script recover what was actually solved.
+
+`run_manifest.toml` does, and it is written on **every** run — failed ones included,
+where `[status]` records why the folder is otherwise empty. Read it with any TOML
+parser (`TOML.parsefile` in Julia, stdlib `tomllib` in Python):
+
+| Table | Contents |
+|---|---|
+| `[run]` | every `RunConfig` scalar, `load_factor` included, plus `[run.ipopt]` / `[run.highs]` / … solver subtables |
+| `[dispatch]` | `DispatchConfig`, enums as strings |
+| `[transient.simulation]`, `[transient.builder]`, `[transient.dyn_model]`, `[transient.dyn_model.fault]` | the transient config tree |
+| `[resolved]` | what only the built model knows: `delta_ref_gen` (the machine `:highest_H` picked), `sg_ids` / `gfm_ids`, `H` / `D` / `Xd_tr`, `delta_tol`, `t_step`, `n_steps_fault` / `n_steps_postfault` / `n_steps_total`, and the cost curve `c0` / `c1` / `c2` per generator |
+| `[exports]` | the dual CSV basenames this run actually wrote, so a reader does not have to probe the filesystem |
+| `[status]` | `termination_status`, `objective_MVA`, `t_build`, `t_solve` |
+
+The config tables are reflected off the structs with `fieldnames`, so a field added
+to `RunConfig` or `DynModelConfig` appears in the manifest without touching the
+writer. Greek field names are transliterated on the way out (`δ_tol` → `delta_tol`,
+`Δω_tol` → `Delta_omega_tol`) so attribute access on the reading side stays sane.
+Fields with no serialisable value are omitted rather than written as a placeholder:
+`nothing`, and callbacks such as `post_solve_hook`.
 
 ### 8.1 Export flags
 
@@ -371,7 +399,11 @@ Notes:
     Inequalities are coded as `(LHS − RHS) ≤ 0`, so `JuMP.dual()` on an *active*
     inequality constraint is **non-positive** by construction — a negative dual on
     a `P_g ≤ P_g^max` constraint is the expected sign for a binding capacity
-    limit, not an error. Power-balance LMPs use **π_k = −λ_k**. When exporting a
+    limit, not an error. Power-balance LMPs use **π_k = +λ_k** on the primal JuMP
+    duals: the balance is coded `P_g − P_d − Σflows == 0` and the Lagrangian is
+    `f − Σλ(LHS − RHS)`, so the two minus signs cancel. The **explicit dual LP**
+    under `Dispatch_Dual/` is a different object with the opposite convention,
+    `π_k = −λ_k`. When exporting a
     new dual family, cross-check the sign on a small case (case9, contingency 2)
     before trusting the CSV: flipping this once and propagating it through a
     stability-adjusted-LMP figure is a quiet way to publish a wrong-signed rent.
@@ -386,7 +418,7 @@ model and on the `DispatchConfig` toggles (`ineq_sbranch_upper`, `ineq_ang_diff_
 
 | Sheet | Constraint | Notation / id column |
 |---|---|---|
-| `P_Balance` / `Q_Balance` | Active / reactive power balance | λ_k (LMP = −λ_k), Bus_ID |
+| `P_Balance` / `Q_Balance` | Active / reactive power balance | λ_k (LMP = +λ_k), Bus_ID |
 | `Sg_Upper` | Generator capability curve | Gen_ID |
 | `Sik_Upper` / `Ski_Upper` | Branch thermal limits (i→k / k→i) | Branch_ID |
 | `Ang_Diff_Lo` / `Ang_Diff_Up` | Angle difference limits | ρ_km⁻ / ρ_km⁺, Branch_ID |
@@ -428,6 +460,21 @@ decided by the fault-on key alone and the exported series simply covers one wind
 
 Authoritative mapping: `_transient_stability/DynDualRegistry.jl` (the three `*_DUAL_SPECS`
 constants).
+
+**Id columns in the TS dual CSVs.** Every file under `Transient_Stability/CSV_duals/`
+names what its rows and columns are:
+
+- per-generator trajectories use `Gen_<id>` headers, per-**bus** ones use `Bus_<id>`.
+  The nodal families (`dual_Pbalance.csv`, `dual_Qbalance.csv`, `dual_V_lower.csv`, …)
+  used to be labelled `Gen_1 … Gen_9` as well, which read as if bus 4 were a generator.
+- the one-value-per-generator files (`dual_Pe_init.csv`, `dual_Pm_init.csv`, the
+  `dual_LB_*` / `dual_UB_*` boxes) carry a leading `Gen_ID` column, and the merged
+  time series (`dual_delta_COI.csv`, …) carry a running `Index`. Previously those files
+  had no id column at all, so the only way to attribute a row was its position — and
+  positions do not line up between families: on a mixed fleet `dual_Pe_init.csv` spans
+  SG **and** converters while `dual_Pe.csv` spans the machines alone.
+
+Readers that select by column name are unaffected by the addition.
 
 ---
 

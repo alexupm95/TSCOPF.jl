@@ -14,7 +14,7 @@ using PiecewiseLinearOpt
 using Dualization
 
 using LinearAlgebra, SparseArrays
-using Dates, NumericIO, DataFrames, Printf, CSV, DataStructures, XLSX
+using Dates, NumericIO, DataFrames, Printf, CSV, DataStructures, XLSX, TOML
 using JuMP, Ipopt, HiGHS
 import MathOptInterface as MOI
 using Trapz
@@ -102,6 +102,8 @@ include("_manage_outputs/functions_2_save_dispatch_model.jl")
 include("_manage_outputs/functions_2_save_dispatch_results.jl")
 include("_manage_outputs/DispatchDualRegistry.jl")
 include("_manage_outputs/functions_2_save_dispatch_duals.jl")
+# Needs both dual registries in scope (the [exports] table lists what they wrote).
+include("_manage_outputs/functions_2_save_run_manifest.jl")
 
 include("engine.jl")
 
@@ -123,6 +125,8 @@ export gfm_id_set, sg_active_gens, gfm_active_gens, dgfm_row, gfm_machine_warmst
 export Attach_GFM_init!, Attach_GFM_fault!, Attach_GFM_postf!, register_gfm_meta!
 export attach_gfm_acopf_limits!, resolve_sg_gfm_gens!
 export Save_Prefault_Coupling_Starts!
+export Save_Run_Manifest!
+export build_constraint_evaluator
 export Export_Variable_Bounds!
 export resolve_gfm_bound_limits, smooth_max_expr, smooth_min_expr, smooth_clip_expr
 export validate_fault_config!, build_fault_details, copy_fault_config, apply_gl_load_scaling!

@@ -60,6 +60,104 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ### Added
 
+- **The figures now show the corridor the run actually priced.** With
+  `bound_style_δ ∈ (:highest_H, :ref_gen)` the constraint is `δ_g − δ_ref` against one
+  live machine, but every figure was drawn in the COI frame — including the ±δ_tol band
+  in `Delta vs time.svg`, which traced a limit no run ever imposed. Machine-referenced
+  runs now also write `Figures/Delta (ref G<k>) vs time.svg` (the reference flat at zero,
+  ±δ_tol as horizontal lines, so a curve leaving the band is an infeasible machine), and
+  the band in `Delta vs time.svg` is anchored on machine `k`. `Delta (ref COI) vs
+  time.svg` is still written on every style. Both the figure and `angle_rel_ref.csv` come
+  from the same `_δ_relative_to_ref` helper, so they cannot drift apart.
+
+- **`Figures_Duals/` covers every stability corridor, not only the δ-COI one.** It was
+  fed `dual_δ_COI_lower/upper` and nothing else, so a `:highest_H` / `:ref_gen` run — whose
+  multipliers are filed under `dual_δ_ref_*` — produced an **empty** folder, and the speed
+  corridor was never plotted under either `bound_style_Δω`. The plotter now takes a list of
+  corridor families and skips the ones the model did not build; the δ files keep their
+  historical names (only one δ family exists per run) and the speed corridor lands in
+  `Duals Trans. Stab. Const Domega G<id> <side>.svg`. Each SVG finally carries a title and
+  axis labels naming the frame (`δ corridor (ref. G2) - lower`), since COI-framed and
+  machine-framed shadow prices are different quantities.
+
+- **`dynamic_model_duals.txt` prints the `δ_ref` and `Δω_abs` sections.** The hand-written
+  TXT dump listed only the COI families, so on a machine-referenced or `:abs` run the
+  human-readable dual file was silent about the only corridor that could bind. The header
+  also names the resolved reference machine — the generator with no section of its own is
+  the reference, a fact that previously lived only in `dynamic_model_details.txt` and
+  `run_manifest.toml`.
+
+- **`run_manifest.toml` — a machine-readable description of every run.** Written at
+  the root of the results folder on every `run_case!`, failed solves included (where
+  `[status]` records why the folder is otherwise empty). Tables: `[run]` (every
+  `RunConfig` scalar — `load_factor` among them, which `input_parameters.txt` never
+  recorded and `Inputs/bus_data.csv` cannot supply because it archives the *unscaled*
+  demand), `[dispatch]`, `[transient.*]`, `[resolved]` (the facts only the built model
+  knows: the machine a `:highest_H` corridor resolved to, the SG/GFM partition, `H` /
+  `D` / `Xd_tr`, the timeline, the cost curve), `[exports]` (the dual CSVs this run
+  wrote) and `[status]`. The config tables are reflected off the structs with
+  `fieldnames`, so new fields appear without touching the writer; Greek names are
+  transliterated (`δ_tol` → `delta_tol`). Read it with `TOML.parsefile` or, from
+  Python, the standard-library `tomllib`.
+
+- **`RunConfig.post_solve_hook`.** An optional callback invoked once with the model
+  still assembled, immediately before `release_solver_backend!` invalidates every
+  `VariableRef` / `ConstraintRef` — the only point at which external code can read
+  duals or values off the live model. Keyword-only signature (`cfg`, `sys`,
+  `path_names`, `model`, `opf_dict`, `dyn_model_dict`, `dyn_parameters_dict`,
+  `status`, `status_solved`, `obj_MVA`, `t_build`, `t_solve`), so declare hooks as
+  `f(; kwargs...)` and more data can be handed over later without breaking them.
+  Defaults to `nothing`; exceptions propagate rather than being swallowed.
+
+### Fixed
+
+- **The documented LMP sign was wrong: on the primal duals it is `π_k = +λ_k`, not
+  `−λ_k`.** The exported numbers were always right; only their description was
+  inverted, across `AGENTS.md`, `docs/running_a_case.md` and the model pages. The
+  active balance is coded `P_g − P_d − Σflows == 0` and JuMP's Lagrangian carries
+  `−λ`, so the two minus signs cancel — measured to `9e-13` against
+  `dual_P_balance.csv` on the Kron and FULL_BUS DQ paths, and confirmed by a central
+  finite difference on the objective with the dynamics frozen. Anyone who took the
+  documented sign and plotted a stability-adjusted LMP got the rent inverted.
+  The subtlety that made this survive: the **explicit dual LP** (`Dispatch_Dual/`,
+  ED and DC-OPF) is a *different* object. It codes stationarity as `c_g + λ_k == 0`,
+  so its own multiplier is `−c_g` and there `π_k = −λ_k` is correct. Both routes give
+  the same price from opposite-signed multipliers; every affected page now says which
+  object it means, and `docs/src/model/07_duals_economics.md` states its stationarity
+  equation in the JuMP convention so the LMP decomposition below it still closes.
+
+- **`dynamic_model_details.txt` is ordered as a document again, and can no longer
+  omit a family.** The file used to open with a six-line configuration block, run
+  the Kron-shared listing, and then — *after* the constraint census — append a
+  FULL_BUS block and a GFM block containing more variables and more equalities. On
+  a FULL_BUS DQ+AVR+governor run that put the corridor header at line 43 486 and
+  the census at line 51 134 of 96 876, with half the run's variables below both.
+  It now reads: **summary** (configuration, corridors, and a census of every
+  variable / equality / inequality family with row counts), then **all variables**
+  grouped pre-fault / fault / post-fault, then **all equality families**, then
+  **all inequality families**.
+  The three writers behind it (`Export_Dynamic_Model_tsred`, its ~95 %-identical
+  linear twin `Export_Dynamic_Model_tsredlinear`, and `Export_Dynamic_Model_fullbus`)
+  plus the FULL_BUS, GFM and machine-control appendices are replaced by a single
+  `Export_Dynamic_Model!` that iterates `:vars`, `:eq_const` and `:ineq_const`
+  instead of naming families — about 1 300 lines removed. Appending was the only
+  thing the old design *could* do, which is why the order was wrong; and because
+  each section named its families, a name drifting out of a list deleted that family
+  from the file with no trace (the failure PR #28 fixed for 16 of ~90 families, and
+  the one `_HANDWRITTEN_INEQ_FAMILIES` existed to paper over). A family with no
+  entry in the new `_FAMILY_TITLES` table still gets its own section, headed by its
+  raw symbol. A test now asserts that every family the builder registered appears as
+  a section, and that the census precedes all three dumps.
+  (`dual_Pbalance.csv`, `dual_Qbalance.csv`, `dual_V_lower.csv`, …) were labelled
+  `Gen_1 … Gen_9` although the keys are bus ids; they now use `Bus_<id>`. The
+  one-value-per-generator files (`dual_Pe_init.csv`, `dual_Pm_init.csv`, the
+  `dual_LB_*` / `dual_UB_*` boxes) had no id column at all, so rows could only be
+  attributed by position — and positions do not align across families: on a mixed
+  fleet `dual_Pe_init.csv` spans SG **and** converters while `dual_Pe.csv` spans the
+  machines alone, so aligning them by row silently misattributed duals. Those files
+  gained a leading `Gen_ID` column, and the merged time series a running `Index`.
+  Additive: readers that select by column name are unaffected.
+
 - **Machine-referenced rotor-angle corridor.** `bound_style_δ = :highest_H` bounds
   every surviving machine against the largest-inertia one; `:ref_gen` bounds them
   against `δ_ref_gen_id`. The reference carries no row of its own, so the corridor

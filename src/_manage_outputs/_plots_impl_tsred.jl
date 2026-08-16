@@ -26,7 +26,13 @@ function _plots_save_tsred!(t_window_total::Vector{Float64},
     f_syn::Float64,
     δ_tol::Tuple{Float64, Float64},
     path_names::OrderedDict{Symbol, String};
-    t_clear_fault = nothing
+    t_clear_fault = nothing,
+    # Machine-referenced corridor (`bound_style_δ ∈ (:highest_H, :ref_gen)`): the run bounds
+    # δ_g − δ_ref, not δ_g − δ_COI, so the ±δ_tol band belongs on the reference machine and the
+    # COI-relative figure is not the picture of the constraint. Both stay `nothing` on the
+    # COI-referenced styles, where every plot below is unchanged.
+    δ_ref_gen::Union{Nothing, Int} = nothing,
+    δ_reft::Union{Nothing, OrderedDict{Int, Vector{Float64}}} = nothing,
     )
 
     pf_figures = path_names[:pf_TS_figures]
@@ -89,9 +95,18 @@ function _plots_save_tsred!(t_window_total::Vector{Float64},
             ls=:solid
         )
     end
-    plot_δ = plot!(t_window_total, rad2deg.(δCOIt)             , label="COI",   lw=2, ls=:solid, lc=:black)
-    plot_δ = plot!(t_window_total, rad2deg.(δCOIt .+ δ_tol[1]) , label="- tol", lw=2, ls=:dash,  lc=:red)
-    plot_δ = plot!(t_window_total, rad2deg.(δCOIt .+ δ_tol[2]) , label="+ tol", lw=2, ls=:dash,  lc=:red)
+    # The corridor band is anchored on whatever the run actually referenced: the COI, or the
+    # reference machine's own angle. Drawing the COI band on a machine-referenced run showed a
+    # limit that was never imposed. The COI curve itself stays either way — it costs one line and
+    # still tells the reader where the fleet's centre went.
+    # Keyed off `δ_reft` rather than `δ_ref_gen`: the caller's helper already checked that the
+    # reference machine has a trajectory, so this cannot raise a KeyError on `δt`.
+    machine_referenced = δ_reft !== nothing
+    δ_band_anchor = machine_referenced ? δt[δ_ref_gen] : δCOIt
+    band_ref_label = machine_referenced ? "G$(δ_ref_gen)" : "COI"
+    plot_δ = plot!(t_window_total, rad2deg.(δCOIt)                     , label="COI",   lw=2, ls=:solid, lc=:black)
+    plot_δ = plot!(t_window_total, rad2deg.(δ_band_anchor .+ δ_tol[1]) , label="- tol (ref $band_ref_label)", lw=2, ls=:dash, lc=:red)
+    plot_δ = plot!(t_window_total, rad2deg.(δ_band_anchor .+ δ_tol[2]) , label="+ tol (ref $band_ref_label)", lw=2, ls=:dash, lc=:red)
     plot_δ = plot!(xlabel="t (s)", ylabel="δ (deg)", title="Rotor Angles",
     size=(1200,800), titlefont=font(40), xtickfont=font(35), ytickfont=font(35), guidefont=font(35), legendfont=font(15),
     fontfamily="Times New Roman", left_margin=10mm, bottom_margin=10mm, top_margin=10mm, right_margin=10mm,
@@ -116,6 +131,33 @@ function _plots_save_tsred!(t_window_total::Vector{Float64},
     fontfamily="Times New Roman", left_margin=10mm, bottom_margin=10mm, top_margin=10mm, right_margin=10mm,
     gridlinewidth=2, gridalpha=0.05, gridstyle=:dash)
     if !isnothing(t_clear_fault) plot_δ_COI = plot!([t_clear_fault], seriestype=:vline, line=:dash, color=:magenta, label="t_ct") end
+
+
+    # Plot rotor angles in degrees in relation to the reference machine (machine-referenced
+    # corridor only). The reference is flat at zero by construction — δ_ref − δ_ref — and the
+    # ±δ_tol lines are horizontal here, so this figure is the corridor itself: a curve leaving
+    # the band is an infeasible machine, read straight off the axes.
+    plot_δ_ref = nothing
+    if δ_reft !== nothing
+        plot_δ_ref = plot()  # create an empty plot
+
+        for (gen_id, values) in δ_reft
+            plot!(plot_δ_ref,
+                t_window_total,
+                rad2deg.(values),
+                lw = 3,
+                label = "G$gen_id",
+                ls=:solid
+            )
+        end
+        plot_δ_ref = plot!([rad2deg(δ_tol[1])], seriestype=:hline, label="- tol", lw=2, ls=:dash, lc=:red)
+        plot_δ_ref = plot!([rad2deg(δ_tol[2])], seriestype=:hline, label="+ tol", lw=2, ls=:dash, lc=:red)
+        plot_δ_ref = plot!(xlabel="t (s)", ylabel="δ - δ_G$(δ_ref_gen) (deg)", title="Rotor Angles (ref. G$(δ_ref_gen))",
+        size=(1200,800), titlefont=font(40), xtickfont=font(35), ytickfont=font(35), guidefont=font(35), legendfont=font(15),
+        fontfamily="Times New Roman", left_margin=10mm, bottom_margin=10mm, top_margin=10mm, right_margin=10mm,
+        gridlinewidth=2, gridalpha=0.05, gridstyle=:dash)
+        if !isnothing(t_clear_fault) plot_δ_ref = plot!([t_clear_fault], seriestype=:vline, line=:dash, color=:magenta, label="t_ct") end
+    end
 
 
     #----------------------------------------
@@ -424,6 +466,9 @@ function _plots_save_tsred!(t_window_total::Vector{Float64},
     end
     savefig(plot_δ,         joinpath(pf_figures, "Delta vs time.svg"))
     savefig(plot_δ_COI,     joinpath(pf_figures, "Delta (ref COI) vs time.svg"))
+    if plot_δ_ref !== nothing
+        savefig(plot_δ_ref, joinpath(pf_figures, "Delta (ref G$(δ_ref_gen)) vs time.svg"))
+    end
     savefig(plot_Δω,        joinpath(pf_figures, "Speed Deviation vs time.svg"))
     savefig(plot_Δω_COI,    joinpath(pf_figures, "Speed Deviation (ref COI) vs time.svg"))
     savefig(plot_Δω_1,      joinpath(pf_figures, "Rotor speed vs time.svg"))
@@ -442,39 +487,42 @@ function _plots_save_tsred!(t_window_total::Vector{Float64},
     println("Figures of the dynamic model successfully saved as SVG files in: ", pf_figures)
 end
 
+"""
+    _plots_save_dual_ts_svgs!(t_window_total, families, pf_ts_figures_duals)
+
+One SVG per generator per bound side, for every stability-corridor dual family the run built.
+
+`families` is a vector of NamedTuples `(; title, side, tag, ylabel, data)` assembled by the
+caller, which is the only place that knows which corridor style produced the multipliers. A
+family whose `data` is `nothing` was not built and is skipped — that is how the δ-COI, δ-ref,
+Δω-COI and Δω-abs corridors all reach this function without a style branch here.
+
+`tag` disambiguates the filenames across families (`""` for the angle corridor, which keeps the
+historical name; `"Domega "` for the speed one). Only one angle family and one speed family can
+exist in a given run, so the untagged name never collides.
+"""
 function _plots_save_dual_ts_svgs!(
     t_window_total::Vector{Float64},
-    dual_δ_COI_lower,
-    dual_δ_COI_upper,
+    families,
     pf_ts_figures_duals::String,
 )
-        if dual_δ_COI_lower !== nothing
-            plt = plot()
-            for (gen_id, values) in dual_δ_COI_lower
-                global plt
-                plt = plot(t_window_total, values,
-                    lw = 3, label = "G$gen_id", ls=:solid,
-                    size=(1200,800), titlefont=font(40), xtickfont=font(35), ytickfont=font(35), guidefont=font(35), legendfont=font(15),
-                    fontfamily="Times New Roman", left_margin=10mm, bottom_margin=10mm, top_margin=10mm, right_margin=10mm,
-                    gridlinewidth=2, gridalpha=0.05, gridstyle=:dash
-                )
-                savefig(plt, joinpath(pf_ts_figures_duals, "Duals Trans. Stab. Const G$gen_id lower.svg"))
-            end
+    for fam in families
+        fam.data === nothing && continue
+        for (gen_id, values) in fam.data
+            plt = plot(t_window_total, values,
+                lw = 3, label = "G$gen_id", ls=:solid,
+                size=(1200,800), titlefont=font(40), xtickfont=font(35), ytickfont=font(35), guidefont=font(35), legendfont=font(15),
+                fontfamily="Times New Roman", left_margin=10mm, bottom_margin=10mm, top_margin=10mm, right_margin=10mm,
+                gridlinewidth=2, gridalpha=0.05, gridstyle=:dash
+            )
+            # Axis labels and a title naming the frame: without them these figures were
+            # unreadable out of context, and COI-framed vs machine-framed duals are different
+            # quantities that used to land in identically named files.
+            plt = plot!(plt, xlabel="t (s)", ylabel=fam.ylabel, title=fam.title)
+            savefig(plt, joinpath(pf_ts_figures_duals,
+                "Duals Trans. Stab. Const $(fam.tag)G$gen_id $(fam.side).svg"))
         end
-
-        if dual_δ_COI_upper !== nothing
-            plt = plot()
-            for (gen_id, values) in dual_δ_COI_upper
-                global plt
-                plt = plot(t_window_total, values,
-                    lw = 3, label = "G$gen_id", ls=:solid,
-                    size=(1200,800), titlefont=font(40), xtickfont=font(35), ytickfont=font(35), guidefont=font(35), legendfont=font(15),
-                    fontfamily="Times New Roman", left_margin=10mm, bottom_margin=10mm, top_margin=10mm, right_margin=10mm,
-                    gridlinewidth=2, gridalpha=0.05, gridstyle=:dash
-                )
-                savefig(plt, joinpath(pf_ts_figures_duals, "Duals Trans. Stab. Const G$gen_id upper.svg"))
-            end
-        end
+    end
     return nothing
 end
 

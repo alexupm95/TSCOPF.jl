@@ -8,199 +8,6 @@ function _is_dq_4th_model(dyn_model_dict::OrderedDict{Symbol, Any})::Bool
     return get(get(dyn_model_dict, :meta, OrderedDict{Symbol, Any}()), :gen_order, "") == "DQ_4TH"
 end
 
-"""Pre-fault variable dicts for `dynamic_model_details.txt`, including mechanical power."""
-function _export_prefault_var_dicts(dyn_model_dict::OrderedDict{Symbol, Any})::Vector{Any}
-    dicts = Any[]
-    if _is_dq_4th_model(dyn_model_dict)
-        haskey(dyn_model_dict[:vars], :E_fd) && push!(dicts, dyn_model_dict[:vars][:E_fd])
-        for sym in (:Ed, :Eq, :Id, :Iq)
-            haskey(dyn_model_dict[:vars], sym) && push!(dicts, dyn_model_dict[:vars][sym])
-        end
-    else
-        haskey(dyn_model_dict[:vars], :E) && push!(dicts, dyn_model_dict[:vars][:E])
-    end
-    haskey(dyn_model_dict[:vars], :δ) && push!(dicts, dyn_model_dict[:vars][:δ])
-    # USE_PM → explicit P_m; USE_PG → OPF dispatch P_g (aliased in :refs[:P_mech]).
-    if haskey(dyn_model_dict, :refs) && haskey(dyn_model_dict[:refs], :P_mech)
-        push!(dicts, dyn_model_dict[:refs][:P_mech])
-    elseif haskey(dyn_model_dict[:vars], :P_m)
-        push!(dicts, dyn_model_dict[:vars][:P_m])
-    end
-    # Control set-points: constant over the horizon, created only by the AVR / governor.
-    # They are not dq-specific — the governor also runs on the classical FULL_BUS path.
-    for sym in (:V_ref, :P_ref)
-        haskey(dyn_model_dict[:vars], sym) && push!(dicts, dyn_model_dict[:vars][sym])
-    end
-    # GFM pre-fault algebraic (Phase G1); absent when allow_gfm=false.
-    for sym in (:P_meas, :Q_meas, :V_meas, :E_int, :V_set)
-        haskey(dyn_model_dict[:vars], sym) && push!(dicts, dyn_model_dict[:vars][sym])
-    end
-    return dicts
-end
-
-"""Governor state trajectories (`Pv_raw_tf`, `Pv_tf`, `Pm_tf`, …) for the model TXT export.
-
-Independent of `gen_order`: the TGOV1 governor is attached on the classical FULL_BUS path
-as well as on DQ, so these must not sit behind the dq gate."""
-function _export_gov_time_var_dicts(
-    dyn_model_dict::OrderedDict{Symbol, Any},
-    suffix::String,
-)::Vector{Any}
-    dicts = Any[]
-    for stem in ("Pv_raw", "Pv", "Pm")
-        key = Symbol(string(stem, "_", suffix))
-        haskey(dyn_model_dict[:vars], key) && push!(dicts, dyn_model_dict[:vars][key])
-    end
-    return dicts
-end
-
-"""Fault/post-fault dq machine trajectories (`Ed_tf`, `Eq_tf`, …) for model TXT export."""
-function _export_dq_time_var_dicts(
-    dyn_model_dict::OrderedDict{Symbol, Any},
-    suffix::String,
-)::Vector{Any}
-    dicts = Any[]
-    for stem in ("Ed", "Eq", "Id", "Iq", "Te", "E_LL", "E_fd", "E_fd_unlim")
-        key = Symbol(string(stem, "_", suffix))
-        haskey(dyn_model_dict[:vars], key) && push!(dicts, dyn_model_dict[:vars][key])
-    end
-    return dicts
-end
-
-"""GFM time-window trajectories (`P_meas_tf`, `E_droop_tf`, …) registered by `Attach_GFM_*!`."""
-function _export_gfm_time_var_dicts(
-    dyn_model_dict::OrderedDict{Symbol, Any},
-    suffix::String,
-)::Vector{Any}
-    dicts = Any[]
-    for stem in ("P_meas", "Q_meas", "V_meas", "E_int_raw", "E_int", "E_droop_raw", "E_droop")
-        key = Symbol(string(stem, "_", suffix))
-        haskey(dyn_model_dict[:vars], key) && push!(dicts, dyn_model_dict[:vars][key])
-    end
-    return dicts
-end
-
-"""Print GFM equality blocks: gen → t → Vector{ConstraintRef} (reference-style visibility)."""
-function _export_gfm_eq_vector_block!(
-    io::IO,
-    title::AbstractString,
-    block,
-)
-    bar = "=" ^ max(length(title) + 1, 1)
-    println(io, bar)
-    println(io, title)
-    println(io, bar)
-    for (gen, by_t) in block
-        for (t, crefs) in by_t
-            for (k, cref) in enumerate(crefs)
-                println(io, "G$(gen)[t=$t]#$k: ", cref)
-            end
-        end
-    end
-    println(io, "\n")
-    return nothing
-end
-
-"""Append GFM init + fault/post-fault vars/eqs to `dynamic_model_details.txt`."""
-function _export_gfm_appendix!(
-    io::IO,
-    dyn_model_dict::OrderedDict{Symbol, Any},
-)
-    vars = get(dyn_model_dict, :vars, nothing)
-    eqs = get(dyn_model_dict, :eq_const, nothing)
-    vars === nothing && return nothing
-    eqs === nothing && return nothing
-
-    has_gfm = any(haskey(vars, k) for k in
-        (:P_meas, :P_meas_tf, :P_meas_tpf, :E_droop_tf, :E_droop_tpf))
-    has_gfm || return nothing
-
-    println(io, "\n")
-    println(io, "============================================================")
-    println(io, "GFM converter variables and constraints (appendix)")
-    println(io, "============================================================")
-    if haskey(dyn_model_dict, :meta)
-        meta = dyn_model_dict[:meta]
-        haskey(meta, :gfm_gens) && println(io, "gfm_gens: ", meta[:gfm_gens])
-        haskey(meta, :gfm_phase) && println(io, "gfm_phase: ", meta[:gfm_phase])
-    end
-    println(io, "\n")
-
-    for (label, key) in (
-        ("Pre-Fault — GFM P_meas", :P_meas),
-        ("Pre-Fault — GFM Q_meas", :Q_meas),
-        ("Pre-Fault — GFM V_meas", :V_meas),
-        ("Pre-Fault — GFM E_int", :E_int),
-        ("Pre-Fault — GFM V_set", :V_set),
-    )
-        haskey(vars, key) || continue
-        println(io, "=================================")
-        println(io, "Variables: $label")
-        println(io, "=================================")
-        for (gen, v) in vars[key]
-            println(io, "$gen: ", v)
-        end
-        println(io, "\n")
-    end
-
-    for (label, key) in (
-        ("Fault Period — GFM P_meas_tf", :P_meas_tf),
-        ("Fault Period — GFM Q_meas_tf", :Q_meas_tf),
-        ("Fault Period — GFM V_meas_tf", :V_meas_tf),
-        ("Fault Period — GFM E_int_raw_tf", :E_int_raw_tf),
-        ("Fault Period — GFM E_int_tf", :E_int_tf),
-        ("Fault Period — GFM E_droop_raw_tf", :E_droop_raw_tf),
-        ("Fault Period — GFM E_droop_tf", :E_droop_tf),
-        ("Post-Fault Period — GFM P_meas_tpf", :P_meas_tpf),
-        ("Post-Fault Period — GFM Q_meas_tpf", :Q_meas_tpf),
-        ("Post-Fault Period — GFM V_meas_tpf", :V_meas_tpf),
-        ("Post-Fault Period — GFM E_int_raw_tpf", :E_int_raw_tpf),
-        ("Post-Fault Period — GFM E_int_tpf", :E_int_tpf),
-        ("Post-Fault Period — GFM E_droop_raw_tpf", :E_droop_raw_tpf),
-        ("Post-Fault Period — GFM E_droop_tpf", :E_droop_tpf),
-    )
-        haskey(vars, key) || continue
-        println(io, "=================================")
-        println(io, "Variables: $label")
-        println(io, "=================================")
-        for (gen, inner) in vars[key]
-            println(io, " ******* Gen $gen ****** ")
-            for (t, v) in inner
-                println(io, "$t: ", v)
-            end
-            println(io, "\n")
-        end
-    end
-
-    for (title, key) in (
-        ("Equality Constraints: GFM Init — P_meas", :eq_const_gfm_Pmeas_init),
-        ("Equality Constraints: GFM Init — Q_meas", :eq_const_gfm_Qmeas_init),
-        ("Equality Constraints: GFM Init — V_meas", :eq_const_gfm_Vmeas_init),
-        ("Equality Constraints: GFM Init — V_set equilibrium", :eq_const_gfm_Vset_init),
-    )
-        haskey(eqs, key) || continue
-        println(io, "=====================================")
-        println(io, title)
-        println(io, "=====================================")
-        for (gen, c) in eqs[key]
-            println(io, "$gen: ", c)
-        end
-        println(io, "\n")
-    end
-
-    if haskey(eqs, :eq_const_gfm_tf)
-        _export_gfm_eq_vector_block!(io,
-            "Fault Period — GFM dynamics (filter/droop/PI/limiter)",
-            eqs[:eq_const_gfm_tf])
-    end
-    if haskey(eqs, :eq_const_gfm_tpf)
-        _export_gfm_eq_vector_block!(io,
-            "Post-Fault Period — GFM dynamics (filter/droop/PI/limiter)",
-            eqs[:eq_const_gfm_tpf])
-    end
-    return nothing
-end
-
 """Print machine/control constraints not covered by the classical 2nd-order export.
 
 Covers the dq machine (DQ_4TH only), the AVR (DQ only) and the turbine governor. The
@@ -208,74 +15,6 @@ governor runs on the **classical** FULL_BUS path too, so this block must not be 
 `_is_dq_4th_model` — every family is selected by `haskey`, and the dq/AVR keys are simply
 absent on a classical run.
 """
-function _export_machine_control_eq_const_appendix!(
-    io::IO,
-    dyn_model_dict::OrderedDict{Symbol, Any},
-)
-    for (title, key) in (
-        ("DQ Init — Subtransient EMF Ed", :eq_const_Ed_init),
-        ("DQ Init — Subtransient EMF Eq", :eq_const_Eq_init),
-        ("DQ Init — Stator Voltage Vd", :eq_const_Vd_init),
-        ("DQ Init — Stator Voltage Vq", :eq_const_Vq_init),
-        ("DQ Init — Exciter E_fd", :eq_const_Efd_init),
-        ("Governor Init — Set-point P_ref", :eq_const_Pref_init),
-    )
-        haskey(dyn_model_dict[:eq_const], key) || continue
-        println(io, "=====================================")
-        println(io, "Equality Constraints: $title")
-        println(io, "=====================================")
-        for (i, c) in dyn_model_dict[:eq_const][key]
-            println(io, "$i: ", c)
-        end
-        println(io, "\n")
-    end
-    for (title, key_tf, key_tpf) in (
-        ("DQ Te = Ed·Id + Eq·Iq", :eq_const_Te_tf, :eq_const_Te_tpf),
-        ("DQ Stator Vd", :eq_const_Vd_tf, :eq_const_Vd_tpf),
-        ("DQ Stator Vq", :eq_const_Vq_tf, :eq_const_Vq_tpf),
-        ("DQ EMF Ed dynamics", :eq_const_Ed_tf, :eq_const_Ed_tpf),
-        ("DQ EMF Eq dynamics", :eq_const_Eq_tf, :eq_const_Eq_tpf),
-        ("AVR Lead-Lag (E_LL)", :eq_const_avr_leadlag_tf, :eq_const_avr_leadlag_tpf),
-        ("AVR Exciter ODE (E_fd_unlim)", :eq_const_E_fd_unlim_tf, :eq_const_E_fd_unlim_tpf),
-        ("AVR Field Softsat (E_fd)", :eq_const_E_fd_tf, :eq_const_E_fd_tpf),
-        ("Governor Valve ODE (P_valve_raw)", :eq_const_gov_valve_tf, :eq_const_gov_valve_tpf),
-        ("Governor Valve Softsat (P_valve)", :eq_const_gov_valve_limit_tf, :eq_const_gov_valve_limit_tpf),
-        ("Governor Mech Power ODE (P_mech)", :eq_const_gov_mech_tf, :eq_const_gov_mech_tpf),
-    )
-        for (period, key) in (("Fault Period", key_tf), ("Post-Fault Period", key_tpf))
-            haskey(dyn_model_dict[:eq_const], key) || continue
-            println(io, "=====================================")
-            println(io, "Equality Constraints: $title ($period)")
-            println(io, "=====================================")
-            for i in eachindex(dyn_model_dict[:eq_const][key])
-                println(io, " ******* Gen $i ****** ")
-                for (t, c) in dyn_model_dict[:eq_const][key][i]
-                    println(io, "$t: ", c)
-                end
-                println(io, "\n")
-            end
-        end
-    end
-    # GOV_HARD_BOUND under the CONSTRAINT encoding emits explicit ≤-form valve bounds.
-    # (Under the VARIABLE encoding they sit on `Pv_raw` and are dumped by
-    # `Export_Variable_Bounds!` instead, so nothing is listed here.)
-    for (period, win) in (("Fault Period", "tf"), ("Post-Fault Period", "tpf")),
-        (side, side_label) in ((:lower, "Lower Bound"), (:upper, "Upper Bound"))
-        key = Symbol("ineq_const_gov_valve_$(win)_$(side)")
-        haskey(dyn_model_dict[:ineq_const], key) || continue
-        println(io, "=====================================")
-        println(io, "Inequality Constraints: Governor Valve $side_label ($period)")
-        println(io, "=====================================")
-        for i in eachindex(dyn_model_dict[:ineq_const][key])
-            println(io, " ******* Gen $i ****** ")
-            for (t, c) in dyn_model_dict[:ineq_const][key][i]
-                println(io, "$t: ", c)
-            end
-            println(io, "\n")
-        end
-    end
-    return nothing
-end
 
 function _export_mech_power_mode_label(dyn_model_dict::OrderedDict{Symbol, Any})::String
     if !haskey(dyn_model_dict, :mech_power_mode)
@@ -647,27 +386,7 @@ end
 
 # δCOI_tf is optional like the rest: a machine-referenced δ corridor keeps the COI as an
 # expression, so there is no variable for this listing to show.
-function _export_fault_COI_var_dicts(dyn_model_dict::OrderedDict{Symbol, Any})::Vector{Any}
-    dicts = Any[]
-    if haskey(dyn_model_dict[:vars], :δCOI_tf)
-        push!(dicts, dyn_model_dict[:vars][:δCOI_tf])
-    end
-    if haskey(dyn_model_dict[:vars], :ΔωCOI_tf)
-        push!(dicts, dyn_model_dict[:vars][:ΔωCOI_tf])
-    end
-    return dicts
-end
 
-function _export_postf_COI_var_dicts(dyn_model_dict::OrderedDict{Symbol, Any})::Vector{Any}
-    dicts = Any[]
-    if haskey(dyn_model_dict[:vars], :δCOI_tpf)
-        push!(dicts, dyn_model_dict[:vars][:δCOI_tpf])
-    end
-    if haskey(dyn_model_dict[:vars], :ΔωCOI_tpf)
-        push!(dicts, dyn_model_dict[:vars][:ΔωCOI_tpf])
-    end
-    return dicts
-end
 
 # Inertia H for generator `gen` from SG-only `DGEN_DYN` (0 for GFM / missing).
 function _inertia_H(DGEN_DYN::DataFrame, gen::Int)::Float64
@@ -729,572 +448,446 @@ function _extract_ΔωCOI_trajectories(
     return ΔωCOIt, Δω_COIt
 end
 
-# Function to write the AC-OPF model in a txt file
-function Export_Dynamic_Model_tsred(model::Model, 
-    path_names::OrderedDict{Symbol, String},
-    dyn_model_dict::OrderedDict{Symbol, Any}
-    )
+# =====================================================================================
+# Exhaustive constraint reporting for dynamic_model_details.txt
+# =====================================================================================
+#
+# The hand-written sections below name the families they print. That is fine for the
+# ones they know about and useless for the ones they do not: the writer named 16 of
+# roughly 90 inequality families, and every omission was SILENT. Worse than silent, in
+# one case — the "Angle in Relation to the COI" header prints unconditionally and each
+# side is then guarded by `haskey`, so a machine-referenced run
+# (`bound_style_δ ∈ (:highest_H, :ref_gen)`, which stores under `δ_ref_*`) produced an
+# empty section that reads as "this run has no angle corridor" when it has one. Same
+# for `bound_style_Δω = :abs` and for the always-on FULL_BUS voltage floor
+# `ineq_const_V_tf_lower`, which was invisible despite binding on the faulted bus.
+#
+# The three helpers here iterate `dyn_model_dict` instead of naming families, so a
+# builder that gains a constraint shows up without anyone editing this file.
 
-    pf_ts = path_names[:pf_TS]
+"""
+Rows in one family container.
 
-    # Open the file for writing
-    open(joinpath(pf_ts, "model_summary.txt"), "w") do io
-        # Print the model to the file
-        show(io, model)
+Three shapes occur in the model dictionaries and all three are counted here: `id → ref`,
+`id → t → ref`, and `id → t → Vector{ref}` (the GFM dynamics blocks, which register a
+whole vector of constraints per generator and step).
+"""
+function _family_row_count(container)::Int
+    container isa AbstractDict || return 0
+    n = 0
+    for (_, v) in container
+        if v isa AbstractDict
+            for (_, w) in v
+                n += w isa AbstractVector ? length(w) : 1
+            end
+        elseif v isa AbstractVector
+            n += length(v)
+        else
+            n += 1
+        end
     end
-
-    vector_dict_var_pref      = _export_prefault_var_dicts(dyn_model_dict)
-    vector_dict_var_fault     = [dyn_model_dict[:vars][:Pe_tf], dyn_model_dict[:vars][:δ_tf], dyn_model_dict[:vars][:Δω_tf]]
-    vector_dict_var_fault_COI = _export_fault_COI_var_dicts(dyn_model_dict)
-
-    vector_dict_var_postf = []
-    if haskey(dyn_model_dict[:vars], :Pe_tpf) push!(vector_dict_var_postf, dyn_model_dict[:vars][:Pe_tpf]) end
-    if haskey(dyn_model_dict[:vars], :δ_tpf) push!(vector_dict_var_postf, dyn_model_dict[:vars][:δ_tpf]) end
-    if haskey(dyn_model_dict[:vars], :Δω_tpf) push!(vector_dict_var_postf, dyn_model_dict[:vars][:Δω_tpf]) end
-    if _is_dq_4th_model(dyn_model_dict)
-        append!(vector_dict_var_fault, _export_dq_time_var_dicts(dyn_model_dict, "tf"))
-        append!(vector_dict_var_postf, _export_dq_time_var_dicts(dyn_model_dict, "tpf"))
-        append!(vector_dict_var_fault, _export_gfm_time_var_dicts(dyn_model_dict, "tf"))
-        append!(vector_dict_var_postf, _export_gfm_time_var_dicts(dyn_model_dict, "tpf"))
-    end
-    # Governor states exist on classical FULL_BUS as well — never gate them on gen_order.
-    append!(vector_dict_var_fault, _export_gov_time_var_dicts(dyn_model_dict, "tf"))
-    append!(vector_dict_var_postf, _export_gov_time_var_dicts(dyn_model_dict, "tpf"))
-    vector_dict_var_postf_COI = _export_postf_COI_var_dicts(dyn_model_dict)
-
-    open(joinpath(pf_ts, "dynamic_model_details.txt"), "w") do io
-
-        # ---------------------------
-        # Variables used in the model
-        # ---------------------------
-        begin
-            for line in _export_dyn_meta_header(dyn_model_dict)
-                println(io, line)
-            end
-            println(io, "\n")
-            println(io, "=================================")
-            println(io, "Variables in the Pre-Fault Period")
-            println(io, "=================================")
-            for i in eachindex(vector_dict_var_pref)
-                for (j, info) in vector_dict_var_pref[i]
-                    println(io, "$j: ", info)
-                end
-            end
-            println(io, "\n")
-
-            println(io, "=============================")
-            println(io, "Variables in the Fault Period")
-            println(io, "=============================")
-            for i in eachindex(vector_dict_var_fault)
-                for (j, infoj) in vector_dict_var_fault[i]
-                    for (k, infok) in infoj
-                        println(io, "$k: ", infok)
-                    end
-                end
-            end
-            for i in eachindex(vector_dict_var_fault_COI)
-                for (j, info) in vector_dict_var_fault_COI[i]
-                    println(io, "$j: ", info)
-                end
-            end
-            println(io, "\n")
-
-            println(io, "==================================")
-            println(io, "Variables in the Post-Fault Period")
-            println(io, "==================================")
-            for i in eachindex(vector_dict_var_postf)
-                for (j, infoj) in vector_dict_var_postf[i]
-                    for (k, infok) in infoj
-                        println(io, "$k: ", infok)
-                    end
-                end
-            end
-            for i in eachindex(vector_dict_var_postf_COI)
-                for (j, info) in vector_dict_var_postf_COI[i]
-                    println(io, "$j: ", info)
-                end
-            end
-            println(io, "\n")
-
-            exprs = get(dyn_model_dict, :expressions, nothing)
-            if exprs !== nothing && haskey(exprs, :Qe_tf)
-                println(io, "=======================================================")
-                println(io, "Expressions — Generator Reactive Power Qe (fault-on)")
-                println(io, "=======================================================")
-                for (gen_id, inner) in exprs[:Qe_tf]
-                    for (t, ex) in inner
-                        println(io, "G$gen_id[t=$t]: ", ex)
-                    end
-                end
-                if haskey(exprs, :Qe_tpf)
-                    println(io, "\n=======================================================")
-                    println(io, "Expressions — Generator Reactive Power Qe (post-fault)")
-                    println(io, "=======================================================")
-                    for (gen_id, inner) in exprs[:Qe_tpf]
-                        for (t, ex) in inner
-                            println(io, "G$gen_id[t=$t]: ", ex)
-                        end
-                    end
-                end
-                println(io, "\n")
-            end
-        end
-
-        # ---------------------
-        # Equality constraints
-        # ---------------------
-        if haskey(dyn_model_dict[:eq_const], :eq_const_P_init)
-            println(io, "==================================================================")
-            println(io, "Equality Constraints Initial Active Electrical Power of Generators")
-            println(io, "==================================================================")
-            for (i, info) in dyn_model_dict[:eq_const][:eq_const_P_init] 
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:eq_const], :eq_const_Q_init)
-            println(io, "====================================================================")
-            println(io, "Equality Constraints Initial Reactive Electrical Power of Generators ")
-            println(io, "====================================================================")
-            for (i, info) in dyn_model_dict[:eq_const][:eq_const_Q_init] 
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:eq_const], :eq_const_Pm_init)
-            println(io, "===========================================================")
-            println(io, "Equality Constraints Initial Mechanical Power of Generators ")
-            println(io, "===========================================================")
-            for (i, info) in dyn_model_dict[:eq_const][:eq_const_Pm_init] 
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-        println(io, "=====================================")
-        println(io, "Equality Constraints Angle of the COI ")
-        println(io, "=====================================")
-        if haskey(dyn_model_dict[:eq_const], :eq_const_δCOI_tf)
-            println(io, "------------")
-            println(io, "Fault Period ")
-            println(io, "------------")
-            for (i, info) in dyn_model_dict[:eq_const][:eq_const_δCOI_tf]
-                println(io, "$i: ", info) 
-            end
-        end
-
-        if haskey(dyn_model_dict[:eq_const], :eq_const_δCOI_tpf)
-            println(io, "------------------")
-            println(io, "Post-Fault Period ")
-            println(io, "------------------")
-            for (i, info) in dyn_model_dict[:eq_const][:eq_const_δCOI_tpf]
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:eq_const], :eq_const_ΔωCOI_tf) || haskey(dyn_model_dict[:eq_const], :eq_const_ΔωCOI_tpf)
-            println(io, "===========================================")
-            println(io, "Equality Constraints Speed Deviation of COI ")
-            println(io, "===========================================")
-            if haskey(dyn_model_dict[:eq_const], :eq_const_ΔωCOI_tf)
-                println(io, "------------")
-                println(io, "Fault Period ")
-                println(io, "------------")
-                for (i, info) in dyn_model_dict[:eq_const][:eq_const_ΔωCOI_tf]
-                    println(io, "$i: ", info)
-                end
-            end
-            if haskey(dyn_model_dict[:eq_const], :eq_const_ΔωCOI_tpf)
-                println(io, "------------------")
-                println(io, "Post-Fault Period ")
-                println(io, "------------------")
-                for (i, info) in dyn_model_dict[:eq_const][:eq_const_ΔωCOI_tpf]
-                    println(io, "$i: ", info)
-                end
-            end
-            println(io, "\n")
-        end
-
-        println(io, "=====================================")
-        println(io, "Equality Constraints Electrical Power ")
-        println(io, "=====================================")
-        if haskey(dyn_model_dict[:eq_const], :eq_const_Pe_tf)
-            println(io, "------------")
-            println(io, "Fault Period ")
-            println(io, "------------")
-            for i in eachindex(dyn_model_dict[:eq_const][:eq_const_Pe_tf])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:eq_const][:eq_const_Pe_tf][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-        end
-
-        if haskey(dyn_model_dict[:eq_const], :eq_const_Pe_tpf)
-            println(io, "------------------")
-            println(io, "Post-Fault Period ")
-            println(io, "------------------")
-            for i in eachindex(dyn_model_dict[:eq_const][:eq_const_Pe_tpf])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:eq_const][:eq_const_Pe_tpf][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-            println(io, "\n")
-        end
-
-        println(io, "===========================================")
-        println(io, "Equality Constraints Angle - Swing Equation")
-        println(io, "===========================================")
-        if haskey(dyn_model_dict[:eq_const], :eq_const_δ_tf)
-            println(io, "------------")
-            println(io, "Fault Period ")
-            println(io, "------------")
-            for i in eachindex(dyn_model_dict[:eq_const][:eq_const_δ_tf])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:eq_const][:eq_const_δ_tf][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-        end
-
-        if haskey(dyn_model_dict[:eq_const], :eq_const_δ_tpf)
-            println(io, "------------------")
-            println(io, "Post-Fault Period ")
-            println(io, "------------------")
-            for i in eachindex(dyn_model_dict[:eq_const][:eq_const_δ_tpf])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:eq_const][:eq_const_δ_tpf][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-            println(io, "\n")
-        end
-
-        println(io, "=====================================================")
-        println(io, "Equality Constraints Speed Deviation - Swing Equation")
-        println(io, "=====================================================")
-        if haskey(dyn_model_dict[:eq_const], :eq_const_Δω_tf)
-            println(io, "------------")
-            println(io, "Fault Period ")
-            println(io, "------------")
-            for i in eachindex(dyn_model_dict[:eq_const][:eq_const_Δω_tf])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:eq_const][:eq_const_Δω_tf][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-        end
-
-        if haskey(dyn_model_dict[:eq_const], :eq_const_Δω_tpf)
-            println(io, "------------------")
-            println(io, "Post-Fault Period ")
-            println(io, "------------------")
-            for i in eachindex(dyn_model_dict[:eq_const][:eq_const_Δω_tpf])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:eq_const][:eq_const_Δω_tpf][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-            println(io, "\n")
-        end
-
-        _export_machine_control_eq_const_appendix!(io, dyn_model_dict)
-
-        # ---------------------
-        # Inequality constraints
-        # ---------------------
-        println(io, "===================================================")
-        println(io, "Inequality Constraints Angle in Relation to the COI")
-        println(io, "===================================================")
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_δ_COI_tf_lower)
-            println(io, "--------------------------")
-            println(io, "Fault Period - Lower Bound")
-            println(io, "--------------------------")
-            for i in eachindex(dyn_model_dict[:ineq_const][:ineq_const_δ_COI_tf_lower])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:ineq_const][:ineq_const_δ_COI_tf_lower][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_δ_COI_tf_upper)
-            println(io, "--------------------------")
-            println(io, "Fault Period - Upper Bound")
-            println(io, "--------------------------")
-            for i in eachindex(dyn_model_dict[:ineq_const][:ineq_const_δ_COI_tf_upper])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:ineq_const][:ineq_const_δ_COI_tf_upper][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_δ_COI_tpf_lower)
-            println(io, "-------------------------------")
-            println(io, "Post-Fault Period - Lower Bound")
-            println(io, "-------------------------------")
-            for i in eachindex(dyn_model_dict[:ineq_const][:ineq_const_δ_COI_tpf_lower])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:ineq_const][:ineq_const_δ_COI_tpf_lower][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_δ_COI_tpf_upper)
-            println(io, "-------------------------------")
-            println(io, "Post-Fault Period - Upper Bound")
-            println(io, "-------------------------------")
-            for i in eachindex(dyn_model_dict[:ineq_const][:ineq_const_δ_COI_tpf_upper])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:ineq_const][:ineq_const_δ_COI_tpf_upper][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_Δω_COI_tf_lower) ||
-           haskey(dyn_model_dict[:ineq_const], :ineq_const_Δω_COI_tpf_lower)
-            println(io, "============================================================")
-            println(io, "Inequality Constraints Speed Deviation in Relation to COI")
-            println(io, "============================================================")
-            if haskey(dyn_model_dict[:ineq_const], :ineq_const_Δω_COI_tf_lower)
-                println(io, "--------------------------")
-                println(io, "Fault Period - Lower Bound")
-                println(io, "--------------------------")
-                for i in eachindex(dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tf_lower])
-                    println(io, " ******* Gen $i ****** ")
-                    for (j, info) in dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tf_lower][i]
-                        println(io, "$j: ", info)
-                    end
-                    println(io, "\n")
-                end
-            end
-            if haskey(dyn_model_dict[:ineq_const], :ineq_const_Δω_COI_tf_upper)
-                println(io, "--------------------------")
-                println(io, "Fault Period - Upper Bound")
-                println(io, "--------------------------")
-                for i in eachindex(dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tf_upper])
-                    println(io, " ******* Gen $i ****** ")
-                    for (j, info) in dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tf_upper][i]
-                        println(io, "$j: ", info)
-                    end
-                    println(io, "\n")
-                end
-            end
-            if haskey(dyn_model_dict[:ineq_const], :ineq_const_Δω_COI_tpf_lower)
-                println(io, "-------------------------------")
-                println(io, "Post-Fault Period - Lower Bound")
-                println(io, "-------------------------------")
-                for i in eachindex(dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tpf_lower])
-                    println(io, " ******* Gen $i ****** ")
-                    for (j, info) in dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tpf_lower][i]
-                        println(io, "$j: ", info)
-                    end
-                    println(io, "\n")
-                end
-            end
-            if haskey(dyn_model_dict[:ineq_const], :ineq_const_Δω_COI_tpf_upper)
-                println(io, "-------------------------------")
-                println(io, "Post-Fault Period - Upper Bound")
-                println(io, "-------------------------------")
-                for i in eachindex(dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tpf_upper])
-                    println(io, " ******* Gen $i ****** ")
-                    for (j, info) in dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tpf_upper][i]
-                        println(io, "$j: ", info)
-                    end
-                    println(io, "\n")
-                end
-            end
-        end
-
-        println(io, "==========================================================")
-        println(io, "Inequality Constraints Variables - Initial Operating Point")
-        println(io, "==========================================================")
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_E_lower)
-            println(io, "------------------------------------------")
-            println(io, "Internal voltage magnitude E - Lower Bound")
-            println(io, "------------------------------------------")
-            for (i, info) in dyn_model_dict[:ineq_const][:ineq_const_E_lower] 
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_E_upper)
-            println(io, "------------------------------------------")
-            println(io, "Internal voltage magnitude E - Upper Bound")
-            println(io, "------------------------------------------")
-            for (i, info) in dyn_model_dict[:ineq_const][:ineq_const_E_upper]
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_E_fd_lower)
-            println(io, "------------------------------------------")
-            println(io, "Field voltage E_fd - Lower Bound")
-            println(io, "------------------------------------------")
-            for (i, info) in dyn_model_dict[:ineq_const][:ineq_const_E_fd_lower]
-                println(io, "$i: ", info)
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_E_fd_upper)
-            println(io, "------------------------------------------")
-            println(io, "Field voltage E_fd - Upper Bound")
-            println(io, "------------------------------------------")
-            for (i, info) in dyn_model_dict[:ineq_const][:ineq_const_E_fd_upper]
-                println(io, "$i: ", info)
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_δ_lower)
-            println(io, "---------------------------")
-            println(io, "Rotor Angle δ - Lower Bound")
-            println(io, "---------------------------")
-            for (i, info) in dyn_model_dict[:ineq_const][:ineq_const_δ_lower]
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_δ_upper)
-            println(io, "---------------------------")
-            println(io, "Rotor Angle δ - Upper Bound")
-            println(io, "---------------------------")
-            for (i, info) in dyn_model_dict[:ineq_const][:ineq_const_δ_upper]
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_P_m_lower)
-            println(io, "----------------------------------")
-            println(io, "Mechanical Power Pm - Lower Bound")
-            println(io, "---------------------------------")
-            for (i, info) in dyn_model_dict[:ineq_const][:ineq_const_P_m_lower]
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_P_m_upper)
-            println(io, "---------------------------------")
-            println(io, "Mechanical Power Pm - Upper Bound")
-            println(io, "---------------------------------")
-            for (i, info) in dyn_model_dict[:ineq_const][:ineq_const_P_m_upper]
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-    end
-
-    println("Dynamic Model successfully saved as TXT file in: ", path_names[:pf_TS])
-
+    return n
 end
 
-"""Append FULL_BUS-specific variables and network-balance constraints to the export."""
-function _export_fullbus_network_appendix!(
+"""
+Print one family in full, whichever container shape it uses.
+
+The only per-family printer in this file. Everything a builder registers reaches the TXT
+through here, so a new constraint or variable family needs no writer edit — only a title
+in `_FAMILY_TITLES` if the raw symbol is not readable enough.
+"""
+function _dump_family!(io::IO, title::AbstractString, container)
+    container isa AbstractDict || return nothing
+    println(io, "-"^70)
+    println(io, title, "   [", _family_row_count(container), " rows]")
+    println(io, "-"^70)
+    for (k1, v1) in container
+        if v1 isa AbstractDict
+            println(io, " ******* $(k1) ****** ")
+            for (k2, v2) in v1
+                if v2 isa AbstractVector
+                    for (k, v3) in enumerate(v2)
+                        println(io, "$(k2)#$(k): ", v3)
+                    end
+                else
+                    println(io, "$(k2): ", v2)
+                end
+            end
+            println(io)
+        else
+            println(io, "$(k1): ", v1)
+        end
+    end
+    println(io, "\n")
+    return nothing
+end
+
+"""
+Census of every variable and constraint family in the model: name and row count, one line
+each, sorted by name.
+
+Cheap and, unlike any hand-maintained list, impossible to leave stale — it is derived
+from the model that was actually built. Read it first: if a family you expect is not
+here, the model did not build it; if it is here, the dump further down must contain it.
+"""
+function _export_constraint_census!(io::IO, dyn_model_dict::OrderedDict{Symbol, Any})
+    println(io, "="^70)
+    println(io, "Census — every variable and constraint family in the built model")
+    println(io, "="^70)
+    for (kind, key) in (("variable", :vars), ("equality", :eq_const),
+                        ("inequality", :ineq_const))
+        store = get(dyn_model_dict, key, nothing)
+        store isa AbstractDict || continue
+        fams = sort(collect(keys(store)); by = String)
+        println(io, "-- $(kind): $(length(fams)) families, ",
+                sum(_family_row_count(store[f]) for f in fams; init = 0), " rows --")
+        for f in fams
+            println(io, rpad(String(f), 44), lpad(_family_row_count(store[f]), 8), " rows")
+        end
+        println(io)
+    end
+    println(io, "\n")
+    return nothing
+end
+
+"""
+Which stability corridor this run actually built, named explicitly.
+
+Without this an empty corridor section is ambiguous: it could mean the corridor was
+switched off, or that it was built under a style this file does not print. Stating the
+resolved style removes the ambiguity at the point of reading.
+"""
+function _export_corridor_style_header!(io::IO, dyn_model_dict::OrderedDict{Symbol, Any})
+    meta = get(dyn_model_dict, :meta, OrderedDict{Symbol, Any}())
+    # Print a field only when the model actually carries it. A "?" placeholder would be
+    # indistinguishable from a genuinely unset option, which is the ambiguity this whole
+    # header exists to remove. `δ_tol` in particular lives in `dyn_parameters_dict`, not
+    # in meta, so it is simply absent here — the bound itself is visible in the printed
+    # corridor rows.
+    function line(label, key, suffix = "")
+        haskey(meta, key) || return nothing
+        println(io, rpad(label, 17), ": ", meta[key], suffix)
+        return nothing
+    end
+    println(io, "="^70)
+    println(io, "Stability Corridors — configuration actually built")
+    println(io, "="^70)
+    line("constrain_δ", :constrain_δ)
+    line("bound_style_δ", :bound_style_δ,
+         "   (:coi_box / :swing_propagated store under δ_COI_*, " *
+         ":highest_H / :ref_gen under δ_ref_*)")
+    let r = get(meta, :δ_ref_gen_resolved, get(meta, :δ_ref_gen_id, nothing))
+        r === nothing || println(io, rpad("δ reference gen", 17), ": ", r,
+                                 "   (this machine carries no corridor row of its own,",
+                                 " so δ_ref_* has one row per OTHER machine)")
+    end
+    line("constrain_Δω", :constrain_Δω)
+    line("bound_style_Δω", :bound_style_Δω,
+         "   (:coi_box stores under Δω_COI_*, :abs under Δω_abs_*)")
+    line("Δω_tol", :Δω_tol, " pu")
+    println(io, "\n")
+    return nothing
+end
+
+# Families the hand-written sections already print in full. Anything NOT listed here is
+# dumped by `_export_uncovered_ineq_const!`. A name that drifts out of this list causes
+# a family to be printed TWICE — visible and harmless — whereas the previous design
+# failed the other way, dropping families with no trace. Duplication is the safer error.
+const _FAMILY_TITLES = Dict{Symbol, String}(
+    # --- variables ----------------------------------------------------------------
+    :E                 => "Pre-Fault — Internal EMF E",
+    :E_fd              => "Pre-Fault — Field Voltage E_fd",
+    :δ                 => "Pre-Fault — Rotor Angle δ",
+    :P_m               => "Pre-Fault — Mechanical Power P_m",
+    :Ed                => "Pre-Fault — Subtransient EMF Ed",
+    :Eq                => "Pre-Fault — Subtransient EMF Eq",
+    :Id                => "Pre-Fault — dq Current Id",
+    :Iq                => "Pre-Fault — dq Current Iq",
+    :V_ref             => "Pre-Fault — AVR Voltage Set-point V_ref",
+    :P_ref             => "Pre-Fault — Governor Set-point P_ref",
+    :Pe_tf             => "Electrical Power Pe_tf",
+    :δ_tf              => "Rotor Angle δ_tf",
+    :Δω_tf             => "Speed Deviation Δω_tf",
+    :δCOI_tf           => "COI Angle δCOI_tf",
+    :ΔωCOI_tf          => "COI Speed Deviation ΔωCOI_tf",
+    :Pe_tpf            => "Electrical Power Pe_tpf",
+    :δ_tpf             => "Rotor Angle δ_tpf",
+    :Δω_tpf            => "Speed Deviation Δω_tpf",
+    :δCOI_tpf          => "COI Angle δCOI_tpf",
+    :ΔωCOI_tpf         => "COI Speed Deviation ΔωCOI_tpf",
+    :V_tf              => "Bus Voltage Magnitude V_tf",
+    :θ_tf              => "Bus Voltage Angle θ_tf",
+    :Qe_tf             => "Generator Reactive Power Qe_tf",
+    :Ed_tf             => "Subtransient EMF Ed_tf",
+    :Eq_tf             => "Subtransient EMF Eq_tf",
+    :Id_tf             => "dq Current Id_tf",
+    :Iq_tf             => "dq Current Iq_tf",
+    :Te_tf             => "Electrical Torque Te_tf",
+    :E_LL_tf           => "AVR Lead-Lag E_LL_tf",
+    :E_fd_unlim_tf     => "AVR E_fd_unlim_tf",
+    :E_fd_tf           => "AVR E_fd_tf",
+    :V_tpf             => "Bus Voltage Magnitude V_tpf",
+    :θ_tpf             => "Bus Voltage Angle θ_tpf",
+    :Qe_tpf            => "Generator Reactive Power Qe_tpf",
+    :Ed_tpf            => "Subtransient EMF Ed_tpf",
+    :Eq_tpf            => "Subtransient EMF Eq_tpf",
+    :Id_tpf            => "dq Current Id_tpf",
+    :Iq_tpf            => "dq Current Iq_tpf",
+    :Te_tpf            => "Electrical Torque Te_tpf",
+    :E_LL_tpf          => "AVR Lead-Lag E_LL_tpf",
+    :E_fd_unlim_tpf    => "AVR E_fd_unlim_tpf",
+    :E_fd_tpf          => "AVR E_fd_tpf",
+    :Pv_raw_tf         => "Governor Valve Raw P_valve_raw_tf",
+    :Pv_tf             => "Governor Valve P_valve_tf",
+    :Pm_tf             => "Governor Mech Power P_mech_tf",
+    :Pv_raw_tpf        => "Governor Valve Raw P_valve_raw_tpf",
+    :Pv_tpf            => "Governor Valve P_valve_tpf",
+    :Pm_tpf            => "Governor Mech Power P_mech_tpf",
+    :P_meas            => "GFM P_meas",
+    :Q_meas            => "GFM Q_meas",
+    :V_meas            => "GFM V_meas",
+    :E_int             => "GFM E_int",
+    :V_set             => "GFM V_set",
+    :P_meas_tf         => "GFM P_meas_tf",
+    :Q_meas_tf         => "GFM Q_meas_tf",
+    :V_meas_tf         => "GFM V_meas_tf",
+    :E_int_raw_tf      => "GFM E_int_raw_tf",
+    :E_int_tf          => "GFM E_int_tf",
+    :E_droop_raw_tf    => "GFM E_droop_raw_tf",
+    :E_droop_tf        => "GFM E_droop_tf",
+    :P_meas_tpf        => "GFM P_meas_tpf",
+    :Q_meas_tpf        => "GFM Q_meas_tpf",
+    :V_meas_tpf        => "GFM V_meas_tpf",
+    :E_int_raw_tpf     => "GFM E_int_raw_tpf",
+    :E_int_tpf         => "GFM E_int_tpf",
+    :E_droop_raw_tpf   => "GFM E_droop_raw_tpf",
+    :E_droop_tpf       => "GFM E_droop_tpf",
+
+    # --- equality constraints -----------------------------------------------------
+    :eq_const_P_init          => "Initial Active Electrical Power of Generators",
+    :eq_const_Q_init          => "Initial Reactive Electrical Power of Generators",
+    :eq_const_Pm_init         => "Initial Mechanical Power of Generators",
+    :eq_const_δCOI_tf         => "Angle of the COI (Fault Period)",
+    :eq_const_δCOI_tpf        => "Angle of the COI (Post-Fault Period)",
+    :eq_const_ΔωCOI_tf        => "Speed Deviation of COI (Fault Period)",
+    :eq_const_ΔωCOI_tpf       => "Speed Deviation of COI (Post-Fault Period)",
+    :eq_const_Pe_tf           => "Electrical Power (Fault Period)",
+    :eq_const_Pe_tpf          => "Electrical Power (Post-Fault Period)",
+    :eq_const_δ_tf            => "Angle — Swing Equation (Fault Period)",
+    :eq_const_δ_tpf           => "Angle — Swing Equation (Post-Fault Period)",
+    :eq_const_Δω_tf           => "Speed Deviation — Swing Equation (Fault Period)",
+    :eq_const_Δω_tpf          => "Speed Deviation — Swing Equation (Post-Fault Period)",
+    :eq_const_Ed_init         => "DQ Init — Subtransient EMF Ed",
+    :eq_const_Eq_init         => "DQ Init — Subtransient EMF Eq",
+    :eq_const_Vd_init         => "DQ Init — Stator Voltage Vd",
+    :eq_const_Vq_init         => "DQ Init — Stator Voltage Vq",
+    :eq_const_Efd_init        => "DQ Init — Exciter E_fd",
+    :eq_const_Pref_init       => "Governor Init — Set-point P_ref",
+    :eq_const_Te_tf           => "DQ Te = Ed·Id + Eq·Iq (Fault Period)",
+    :eq_const_Te_tpf          => "DQ Te = Ed·Id + Eq·Iq (Post-Fault Period)",
+    :eq_const_Vd_tf           => "DQ Stator Vd (Fault Period)",
+    :eq_const_Vd_tpf          => "DQ Stator Vd (Post-Fault Period)",
+    :eq_const_Vq_tf           => "DQ Stator Vq (Fault Period)",
+    :eq_const_Vq_tpf          => "DQ Stator Vq (Post-Fault Period)",
+    :eq_const_Ed_tf           => "DQ EMF Ed dynamics (Fault Period)",
+    :eq_const_Ed_tpf          => "DQ EMF Ed dynamics (Post-Fault Period)",
+    :eq_const_Eq_tf           => "DQ EMF Eq dynamics (Fault Period)",
+    :eq_const_Eq_tpf          => "DQ EMF Eq dynamics (Post-Fault Period)",
+    :eq_const_avr_leadlag_tf  => "AVR Lead-Lag (E_LL) (Fault Period)",
+    :eq_const_avr_leadlag_tpf => "AVR Lead-Lag (E_LL) (Post-Fault Period)",
+    :eq_const_E_fd_unlim_tf   => "AVR Exciter ODE (E_fd_unlim) (Fault Period)",
+    :eq_const_E_fd_unlim_tpf  => "AVR Exciter ODE (E_fd_unlim) (Post-Fault Period)",
+    :eq_const_E_fd_tf         => "AVR Field Softsat (E_fd) (Fault Period)",
+    :eq_const_E_fd_tpf        => "AVR Field Softsat (E_fd) (Post-Fault Period)",
+    :eq_const_gov_valve_tf    => "Governor Valve ODE (P_valve_raw) (Fault Period)",
+    :eq_const_gov_valve_tpf   => "Governor Valve ODE (P_valve_raw) (Post-Fault Period)",
+    :eq_const_gov_valve_limit_tf  => "Governor Valve Softsat (P_valve) (Fault Period)",
+    :eq_const_gov_valve_limit_tpf => "Governor Valve Softsat (P_valve) (Post-Fault Period)",
+    :eq_const_gov_mech_tf     => "Governor Mech Power ODE (P_mech) (Fault Period)",
+    :eq_const_gov_mech_tpf    => "Governor Mech Power ODE (P_mech) (Post-Fault Period)",
+    :eq_const_Qe_tf           => "Generator Qe (Fault Period)",
+    :eq_const_Qe_tpf          => "Generator Qe (Post-Fault Period)",
+    :eq_const_Pbalance_tf     => "Active Power Balance (Fault Period)",
+    :eq_const_Pbalance_tpf    => "Active Power Balance (Post-Fault Period)",
+    :eq_const_Qbalance_tf     => "Reactive Power Balance (Fault Period)",
+    :eq_const_Qbalance_tpf    => "Reactive Power Balance (Post-Fault Period)",
+    :eq_const_gfm_Pmeas_init  => "GFM Init — P_meas",
+    :eq_const_gfm_Qmeas_init  => "GFM Init — Q_meas",
+    :eq_const_gfm_Vmeas_init  => "GFM Init — V_meas",
+    :eq_const_gfm_Vset_init   => "GFM Init — V_set equilibrium",
+    :eq_const_gfm_tf          => "GFM dynamics — filter/droop/PI/limiter (Fault Period)",
+    :eq_const_gfm_tpf         => "GFM dynamics — filter/droop/PI/limiter (Post-Fault Period)",
+
+    # --- inequality constraints ---------------------------------------------------
+    :ineq_const_δ_COI_tf_lower   => "δ Corridor vs COI — Fault Period, Lower Bound",
+    :ineq_const_δ_COI_tf_upper   => "δ Corridor vs COI — Fault Period, Upper Bound",
+    :ineq_const_δ_COI_tpf_lower  => "δ Corridor vs COI — Post-Fault Period, Lower Bound",
+    :ineq_const_δ_COI_tpf_upper  => "δ Corridor vs COI — Post-Fault Period, Upper Bound",
+    :ineq_const_δ_ref_tf_lower   => "δ Corridor vs Reference Machine — Fault Period, Lower Bound",
+    :ineq_const_δ_ref_tf_upper   => "δ Corridor vs Reference Machine — Fault Period, Upper Bound",
+    :ineq_const_δ_ref_tpf_lower  => "δ Corridor vs Reference Machine — Post-Fault Period, Lower Bound",
+    :ineq_const_δ_ref_tpf_upper  => "δ Corridor vs Reference Machine — Post-Fault Period, Upper Bound",
+    :ineq_const_Δω_COI_tf_lower  => "Δω Corridor vs COI — Fault Period, Lower Bound",
+    :ineq_const_Δω_COI_tf_upper  => "Δω Corridor vs COI — Fault Period, Upper Bound",
+    :ineq_const_Δω_COI_tpf_lower => "Δω Corridor vs COI — Post-Fault Period, Lower Bound",
+    :ineq_const_Δω_COI_tpf_upper => "Δω Corridor vs COI — Post-Fault Period, Upper Bound",
+    :ineq_const_Δω_abs_tf_lower  => "Δω Corridor, Absolute — Fault Period, Lower Bound",
+    :ineq_const_Δω_abs_tf_upper  => "Δω Corridor, Absolute — Fault Period, Upper Bound",
+    :ineq_const_Δω_abs_tpf_lower => "Δω Corridor, Absolute — Post-Fault Period, Lower Bound",
+    :ineq_const_Δω_abs_tpf_upper => "Δω Corridor, Absolute — Post-Fault Period, Upper Bound",
+    :ineq_const_E_lower          => "Initial Operating Point Box — E, Lower",
+    :ineq_const_E_upper          => "Initial Operating Point Box — E, Upper",
+    :ineq_const_E_fd_lower       => "Initial Operating Point Box — E_fd, Lower",
+    :ineq_const_E_fd_upper       => "Initial Operating Point Box — E_fd, Upper",
+    :ineq_const_δ_lower          => "Initial Operating Point Box — δ, Lower",
+    :ineq_const_δ_upper          => "Initial Operating Point Box — δ, Upper",
+    :ineq_const_P_m_lower        => "Initial Operating Point Box — P_m, Lower",
+    :ineq_const_P_m_upper        => "Initial Operating Point Box — P_m, Upper",
+    :ineq_const_V_tf_lower       => "Bus Voltage Floor (Fault Period)",
+    :ineq_const_V_tpf_lower      => "Bus Voltage Floor (Post-Fault Period)",
+)
+
+"""Readable title for a family, falling back to the symbol so nothing can go unnamed."""
+function _family_title(sym::Symbol)::String
+    title = get(_FAMILY_TITLES, sym, nothing)
+    return title === nothing ? String(sym) : string(title, "   [", sym, "]")
+end
+
+"""
+Which period a family belongs to: 1 pre-fault, 2 fault, 3 post-fault.
+
+Read off the name rather than from a list of families, so a new trajectory variable lands
+in the right block on its own. `"_tpf"` does not contain `"_tf"`, so the two tests are
+independent and their order does not matter.
+"""
+function _family_period(sym::Symbol)::Int
+    name = String(sym)
+    occursin("_tpf", name) && return 3
+    occursin("_tf", name) && return 2
+    return 1
+end
+
+"""Dump every family of one store, in build order, grouped and titled."""
+function _export_family_section!(
     io::IO,
     dyn_model_dict::OrderedDict{Symbol, Any},
+    store_key::Symbol,
+    heading::AbstractString;
+    by_period::Bool = false,
 )
-    for (label, key) in (
-        ("Fault Period — Bus Voltage Magnitude V_tf", :V_tf),
-        ("Fault Period — Bus Voltage Angle θ_tf", :θ_tf),
-        ("Fault Period — Generator Reactive Power Qe_tf", :Qe_tf),
-        ("Fault Period — Subtransient EMF Ed_tf", :Ed_tf),
-        ("Fault Period — Subtransient EMF Eq_tf", :Eq_tf),
-        ("Fault Period — dq Current Id_tf", :Id_tf),
-        ("Fault Period — dq Current Iq_tf", :Iq_tf),
-        ("Fault Period — Electrical Torque Te_tf", :Te_tf),
-        ("Fault Period — AVR Lead-Lag E_LL_tf", :E_LL_tf),
-        ("Fault Period — AVR E_fd_unlim_tf", :E_fd_unlim_tf),
-        ("Fault Period — AVR E_fd_tf", :E_fd_tf),
-        ("Post-Fault Period — Bus Voltage Magnitude V_tpf", :V_tpf),
-        ("Post-Fault Period — Bus Voltage Angle θ_tpf", :θ_tpf),
-        ("Post-Fault Period — Generator Reactive Power Qe_tpf", :Qe_tpf),
-        ("Post-Fault Period — Subtransient EMF Ed_tpf", :Ed_tpf),
-        ("Post-Fault Period — Subtransient EMF Eq_tpf", :Eq_tpf),
-        ("Post-Fault Period — dq Current Id_tpf", :Id_tpf),
-        ("Post-Fault Period — dq Current Iq_tpf", :Iq_tpf),
-        ("Post-Fault Period — Electrical Torque Te_tpf", :Te_tpf),
-        ("Post-Fault Period — AVR Lead-Lag E_LL_tpf", :E_LL_tpf),
-        ("Post-Fault Period — AVR E_fd_unlim_tpf", :E_fd_unlim_tpf),
-        ("Post-Fault Period — AVR E_fd_tpf", :E_fd_tpf),
-        ("Fault Period — Governor Valve Raw P_valve_raw_tf", :Pv_raw_tf),
-        ("Fault Period — Governor Valve P_valve_tf", :Pv_tf),
-        ("Fault Period — Governor Mech Power P_mech_tf", :Pm_tf),
-        ("Post-Fault Period — Governor Valve Raw P_valve_raw_tpf", :Pv_raw_tpf),
-        ("Post-Fault Period — Governor Valve P_valve_tpf", :Pv_tpf),
-        ("Post-Fault Period — Governor Mech Power P_mech_tpf", :Pm_tpf),
-    )
-        if !haskey(dyn_model_dict[:vars], key)
-            continue
+    store = get(dyn_model_dict, store_key, nothing)
+    println(io, "="^70)
+    println(io, heading)
+    println(io, "="^70)
+    if !(store isa AbstractDict) || isempty(store)
+        println(io, "(none — the model built no family of this kind)\n\n")
+        return nothing
+    end
+    # Insertion order is build order (these are OrderedDicts), which reads init → fault →
+    # post-fault without anyone maintaining a sequence. Grouping by period only re-buckets
+    # that order; it never sorts within a bucket.
+    groups = by_period ?
+        (("Pre-Fault Period", 1), ("Fault Period", 2), ("Post-Fault Period", 3)) :
+        (("", 0),)
+    for (label, period) in groups
+        fams = period == 0 ? collect(keys(store)) :
+               [f for f in keys(store) if _family_period(f) == period]
+        isempty(fams) && continue
+        if !isempty(label)
+            println(io, "~"^70)
+            println(io, label, "  (", length(fams), " families)")
+            println(io, "~"^70, "\n")
         end
-        println(io, "=================================")
-        println(io, "Variables: $label")
-        println(io, "=================================")
-        for (bus_or_gen, inner) in dyn_model_dict[:vars][key]
-            println(io, " ******* ID $bus_or_gen ****** ")
-            for (t, v) in inner
-                println(io, "$t: ", v)
-            end
-            println(io, "\n")
+        for f in fams
+            _dump_family!(io, _family_title(f), store[f])
         end
+    end
+    return nothing
+end
+
+"""
+    Export_Dynamic_Model!(model, path_names, dyn_model_dict)
+
+Write `dynamic_model_details.txt` (and `model_summary.txt`) for **every** dynamic path —
+Kron classical, Kron linear, FULL_BUS classical, FULL_BUS DQ_4TH, with or without AVR,
+governor and GFM converters.
+
+Layout, top to bottom:
+
+1. **Summary** — model configuration, the stability corridors actually built, and a census
+   of every variable / equality / inequality family with its row count.
+2. **Variables** — grouped pre-fault / fault / post-fault.
+3. **Equality constraints** — every family, in build order.
+4. **Inequality constraints** — every family, in build order.
+
+Written **before** `optimize!`, so it shows the assembled model rather than a solution.
+
+Nothing here names a family: the sections iterate `dyn_model_dict`'s own containers, so a
+builder that gains a constraint or a variable shows up unaided. That is the point. The
+three writers this replaces drove their sections off hand-written family lists with a
+FULL_BUS appendix and a GFM appendix bolted on after the census — which both mis-ordered
+the file (summary material at line 43 486 of 96 876) and let whole families go unprinted
+when a name drifted out of a list.
+"""
+function Export_Dynamic_Model!(
+    model::Model,
+    path_names::OrderedDict{Symbol, String},
+    dyn_model_dict::OrderedDict{Symbol, Any},
+)
+    pf_ts = path_names[:pf_TS]
+    mkpath(pf_ts)
+
+    open(io -> show(io, model), joinpath(pf_ts, "model_summary.txt"), "w")
+
+    open(joinpath(pf_ts, "dynamic_model_details.txt"), "w") do io
+        # --- 1. summary -----------------------------------------------------------
+        println(io, "="^70)
+        println(io, "Dynamic Model Summary")
+        println(io, "="^70)
+        meta = get(dyn_model_dict, :meta, OrderedDict{Symbol, Any}())
+        haskey(meta, :network_form) && println(io, "network_form: ", meta[:network_form])
+        haskey(meta, :gen_order) && println(io, "gen_order: ", meta[:gen_order])
+        for line in _export_dyn_meta_header(dyn_model_dict)
+            println(io, line)
+        end
+        println(io, "\n")
+        _export_corridor_style_header!(io, dyn_model_dict)
+        _export_constraint_census!(io, dyn_model_dict)
+
+        # --- 2. variables ---------------------------------------------------------
+        _export_family_section!(io, dyn_model_dict, :vars,
+                                "Variables — every family in the built model";
+                                by_period = true)
+
+        # Variables the dynamic model READS but does not own — under `mech_power_mode =
+        # USE_PG` the swing has no `P_m` of its own and drives off the dispatch `P_g`, so
+        # without this section such a run shows no mechanical power anywhere.
+        refs = get(dyn_model_dict, :refs, nothing)
+        if refs isa AbstractDict && !isempty(refs)
+            _export_family_section!(io, dyn_model_dict, :refs,
+                                    "References — dispatch variables the dynamic model reads")
+        end
+
+        # Expressions are neither variables nor constraints, but on the FULL_BUS paths Qe
+        # enters the nodal balances as one, so it belongs with the quantities rather than
+        # in a footnote. Absent where Qe is a variable.
+        exprs = get(dyn_model_dict, :expressions, nothing)
+        if exprs isa AbstractDict && !isempty(exprs)
+            _export_family_section!(io, dyn_model_dict, :expressions,
+                                    "Expressions — derived quantities used in the model";
+                                    by_period = true)
+        end
+
+        # --- 3. equality constraints ----------------------------------------------
+        _export_family_section!(io, dyn_model_dict, :eq_const,
+                                "Equality Constraints — every family in the built model")
+
+        # --- 4. inequality constraints --------------------------------------------
+        _export_family_section!(io, dyn_model_dict, :ineq_const,
+                                "Inequality Constraints — every family in the built model")
     end
 
-    for (label, key) in (
-        ("Fault Period — Generator Qe", :eq_const_Qe_tf),
-        ("Fault Period — DQ Te", :eq_const_Te_tf),
-        ("Fault Period — DQ Stator Vd", :eq_const_Vd_tf),
-        ("Fault Period — DQ Stator Vq", :eq_const_Vq_tf),
-        ("Fault Period — DQ EMF Ed", :eq_const_Ed_tf),
-        ("Fault Period — DQ EMF Eq", :eq_const_Eq_tf),
-        ("Fault Period — Active Power Balance", :eq_const_Pbalance_tf),
-        ("Fault Period — Reactive Power Balance", :eq_const_Qbalance_tf),
-        ("Post-Fault Period — Generator Qe", :eq_const_Qe_tpf),
-        ("Post-Fault Period — DQ Te", :eq_const_Te_tpf),
-        ("Post-Fault Period — DQ Stator Vd", :eq_const_Vd_tpf),
-        ("Post-Fault Period — DQ Stator Vq", :eq_const_Vq_tpf),
-        ("Post-Fault Period — DQ EMF Ed", :eq_const_Ed_tpf),
-        ("Post-Fault Period — DQ EMF Eq", :eq_const_Eq_tpf),
-        ("Post-Fault Period — Active Power Balance", :eq_const_Pbalance_tpf),
-        ("Post-Fault Period — Reactive Power Balance", :eq_const_Qbalance_tpf),
-    )
-        if !haskey(dyn_model_dict[:eq_const], key)
-            continue
-        end
-        println(io, "=====================================")
-        println(io, "Equality Constraints: $label")
-        println(io, "=====================================")
-        for (id, inner) in dyn_model_dict[:eq_const][key]
-            println(io, " ******* Bus/Gen $id ****** ")
-            for (t, c) in inner
-                println(io, "$t: ", c)
-            end
-            println(io, "\n")
-        end
-    end
+    println("Dynamic Model successfully saved as TXT file in: ", pf_ts)
     return nothing
 end
 
@@ -1364,488 +957,6 @@ function Export_Variable_Bounds!(model::Model, outdir::AbstractString)
     return path
 end
 
-"""
-    Export_Dynamic_Model_fullbus(model, path_names, dyn_model_dict)
-
-Full-network classical export: reuses the Kron TXT layout for shared families,
-then appends bus voltages, Qe, and nodal KCL constraints.  Called from
-`export_dynamic_model!` **before** `optimize!` so the assembled model is auditable.
-"""
-function Export_Dynamic_Model_fullbus(
-    model::Model,
-    path_names::OrderedDict{Symbol, String},
-    dyn_model_dict::OrderedDict{Symbol, Any},
-)
-    Export_Dynamic_Model_tsred(model, path_names, dyn_model_dict)
-    pf_ts = path_names[:pf_TS]
-    open(joinpath(pf_ts, "dynamic_model_details.txt"), "a") do io
-        println(io, "\n")
-        println(io, "============================================================")
-        println(io, "FULL_BUS network-specific variables and constraints (appendix)")
-        println(io, "============================================================")
-        # Model metadata (bound_style_δ, ZIP splits, …) is printed once by
-        # `_export_dyn_meta_header` at the top of the file, not here between the
-        # shared constraint listing and the network one.
-        println(io, "network_form: FULL_BUS")
-        println(io, "\n")
-        _export_fullbus_network_appendix!(io, dyn_model_dict)
-        _export_gfm_appendix!(io, dyn_model_dict)
-    end
-    println("FULL_BUS dynamic model successfully saved as TXT file in: ", pf_ts)
-    return nothing
-end
-
-# Function to write the DC-OPF model in a txt file
-function Export_Dynamic_Model_tsredlinear(model::Model, 
-    path_names::OrderedDict{Symbol, String},
-    dyn_model_dict::OrderedDict{Symbol, Any}
-    )
-
-    pf_ts = path_names[:pf_TS]
-
-    # Open the file for writing
-    open(joinpath(pf_ts, "model_summary.txt"), "w") do io
-        # Print the model to the file
-        show(io, model)
-    end
-
-    vector_dict_var_pref      = _export_prefault_var_dicts(dyn_model_dict)
-    vector_dict_var_fault     = [dyn_model_dict[:vars][:Pe_tf], dyn_model_dict[:vars][:δ_tf], dyn_model_dict[:vars][:Δω_tf]]
-    vector_dict_var_fault_COI = _export_fault_COI_var_dicts(dyn_model_dict)
-
-    vector_dict_var_postf = []
-    if haskey(dyn_model_dict[:vars], :Pe_tpf) push!(vector_dict_var_postf, dyn_model_dict[:vars][:Pe_tpf]) end
-    if haskey(dyn_model_dict[:vars], :δ_tpf) push!(vector_dict_var_postf, dyn_model_dict[:vars][:δ_tpf]) end
-    if haskey(dyn_model_dict[:vars], :Δω_tpf) push!(vector_dict_var_postf, dyn_model_dict[:vars][:Δω_tpf]) end
-    vector_dict_var_postf_COI = _export_postf_COI_var_dicts(dyn_model_dict)
-
-    open(joinpath(pf_ts, "dynamic_model_details.txt"), "w") do io
-
-        # ---------------------------
-        # Variables used in the model
-        # ---------------------------
-        begin
-            for line in _export_dyn_meta_header(dyn_model_dict)
-                println(io, line)
-            end
-            println(io, "\n")
-            println(io, "=================================")
-            println(io, "Variables in the Pre-Fault Period")
-            println(io, "=================================")
-            for i in eachindex(vector_dict_var_pref)
-                for (j, info) in vector_dict_var_pref[i]
-                    println(io, "$j: ", info)
-                end
-            end
-            println(io, "\n")
-
-            println(io, "=============================")
-            println(io, "Variables in the Fault Period")
-            println(io, "=============================")
-            for i in eachindex(vector_dict_var_fault)
-                for (j, infoj) in vector_dict_var_fault[i]
-                    for (k, infok) in infoj
-                        println(io, "$k: ", infok)
-                    end
-                end
-            end
-            for i in eachindex(vector_dict_var_fault_COI)
-                for (j, info) in vector_dict_var_fault_COI[i]
-                    println(io, "$j: ", info)
-                end
-            end
-            println(io, "\n")
-
-            println(io, "==================================")
-            println(io, "Variables in the Post-Fault Period")
-            println(io, "==================================")
-            for i in eachindex(vector_dict_var_postf)
-                for (j, infoj) in vector_dict_var_postf[i]
-                    for (k, infok) in infoj
-                        println(io, "$k: ", infok)
-                    end
-                end
-            end
-            for i in eachindex(vector_dict_var_postf_COI)
-                for (j, info) in vector_dict_var_postf_COI[i]
-                    println(io, "$j: ", info)
-                end
-            end
-            println(io, "\n")
-        end
-
-        # ---------------------
-        # Equality constraints
-        # ---------------------
-        if haskey(dyn_model_dict[:eq_const], :eq_const_P_init)
-            println(io, "==================================================================")
-            println(io, "Equality Constraints Initial Active Electrical Power of Generators")
-            println(io, "==================================================================")
-            for (i, info) in dyn_model_dict[:eq_const][:eq_const_P_init] 
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:eq_const], :eq_const_Q_init)
-            println(io, "====================================================================")
-            println(io, "Equality Constraints Initial Reactive Electrical Power of Generators ")
-            println(io, "====================================================================")
-            for (i, info) in dyn_model_dict[:eq_const][:eq_const_Q_init] 
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:eq_const], :eq_const_Pm_init)
-            println(io, "===========================================================")
-            println(io, "Equality Constraints Initial Mechanical Power of Generators ")
-            println(io, "===========================================================")
-            for (i, info) in dyn_model_dict[:eq_const][:eq_const_Pm_init] 
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-        println(io, "=====================================")
-        println(io, "Equality Constraints Angle of the COI ")
-        println(io, "=====================================")
-        if haskey(dyn_model_dict[:eq_const], :eq_const_δCOI_tf)
-            println(io, "------------")
-            println(io, "Fault Period ")
-            println(io, "------------")
-            for (i, info) in dyn_model_dict[:eq_const][:eq_const_δCOI_tf]
-                println(io, "$i: ", info) 
-            end
-        end
-
-        if haskey(dyn_model_dict[:eq_const], :eq_const_δCOI_tpf)
-            println(io, "------------------")
-            println(io, "Post-Fault Period ")
-            println(io, "------------------")
-            for (i, info) in dyn_model_dict[:eq_const][:eq_const_δCOI_tpf]
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:eq_const], :eq_const_ΔωCOI_tf) || haskey(dyn_model_dict[:eq_const], :eq_const_ΔωCOI_tpf)
-            println(io, "===========================================")
-            println(io, "Equality Constraints Speed Deviation of COI ")
-            println(io, "===========================================")
-            if haskey(dyn_model_dict[:eq_const], :eq_const_ΔωCOI_tf)
-                println(io, "------------")
-                println(io, "Fault Period ")
-                println(io, "------------")
-                for (i, info) in dyn_model_dict[:eq_const][:eq_const_ΔωCOI_tf]
-                    println(io, "$i: ", info)
-                end
-            end
-            if haskey(dyn_model_dict[:eq_const], :eq_const_ΔωCOI_tpf)
-                println(io, "------------------")
-                println(io, "Post-Fault Period ")
-                println(io, "------------------")
-                for (i, info) in dyn_model_dict[:eq_const][:eq_const_ΔωCOI_tpf]
-                    println(io, "$i: ", info)
-                end
-            end
-            println(io, "\n")
-        end
-
-        println(io, "=====================================")
-        println(io, "Equality Constraints Electrical Power ")
-        println(io, "=====================================")
-        if haskey(dyn_model_dict[:eq_const], :eq_const_Pe_tf)
-            println(io, "------------")
-            println(io, "Fault Period ")
-            println(io, "------------")
-            for i in eachindex(dyn_model_dict[:eq_const][:eq_const_Pe_tf])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:eq_const][:eq_const_Pe_tf][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-        end
-
-        if haskey(dyn_model_dict[:eq_const], :eq_const_Pe_tpf)
-            println(io, "------------------")
-            println(io, "Post-Fault Period ")
-            println(io, "------------------")
-            for i in eachindex(dyn_model_dict[:eq_const][:eq_const_Pe_tpf])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:eq_const][:eq_const_Pe_tpf][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-            println(io, "\n")
-        end
-
-        println(io, "===========================================")
-        println(io, "Equality Constraints Angle - Swing Equation")
-        println(io, "===========================================")
-        if haskey(dyn_model_dict[:eq_const], :eq_const_δ_tf)
-            println(io, "------------")
-            println(io, "Fault Period ")
-            println(io, "------------")
-            for i in eachindex(dyn_model_dict[:eq_const][:eq_const_δ_tf])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:eq_const][:eq_const_δ_tf][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-        end
-
-        if haskey(dyn_model_dict[:eq_const], :eq_const_δ_tpf)
-            println(io, "------------------")
-            println(io, "Post-Fault Period ")
-            println(io, "------------------")
-            for i in eachindex(dyn_model_dict[:eq_const][:eq_const_δ_tpf])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:eq_const][:eq_const_δ_tpf][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-            println(io, "\n")
-        end
-
-        println(io, "=====================================================")
-        println(io, "Equality Constraints Speed Deviation - Swing Equation")
-        println(io, "=====================================================")
-        if haskey(dyn_model_dict[:eq_const], :eq_const_Δω_tf)
-            println(io, "------------")
-            println(io, "Fault Period ")
-            println(io, "------------")
-            for i in eachindex(dyn_model_dict[:eq_const][:eq_const_Δω_tf])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:eq_const][:eq_const_Δω_tf][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-        end
-
-        if haskey(dyn_model_dict[:eq_const], :eq_const_Δω_tpf)
-            println(io, "------------------")
-            println(io, "Post-Fault Period ")
-            println(io, "------------------")
-            for i in eachindex(dyn_model_dict[:eq_const][:eq_const_Δω_tpf])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:eq_const][:eq_const_Δω_tpf][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-            println(io, "\n")
-        end
-
-        _export_machine_control_eq_const_appendix!(io, dyn_model_dict)
-
-        # ---------------------
-        # Inequality constraints
-        # ---------------------
-        println(io, "===================================================")
-        println(io, "Inequality Constraints Angle in Relation to the COI")
-        println(io, "===================================================")
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_δ_COI_tf_lower)
-            println(io, "--------------------------")
-            println(io, "Fault Period - Lower Bound")
-            println(io, "--------------------------")
-            for i in eachindex(dyn_model_dict[:ineq_const][:ineq_const_δ_COI_tf_lower])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:ineq_const][:ineq_const_δ_COI_tf_lower][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_δ_COI_tf_upper)
-            println(io, "--------------------------")
-            println(io, "Fault Period - Upper Bound")
-            println(io, "--------------------------")
-            for i in eachindex(dyn_model_dict[:ineq_const][:ineq_const_δ_COI_tf_upper])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:ineq_const][:ineq_const_δ_COI_tf_upper][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_δ_COI_tpf_lower)
-            println(io, "-------------------------------")
-            println(io, "Post-Fault Period - Lower Bound")
-            println(io, "-------------------------------")
-            for i in eachindex(dyn_model_dict[:ineq_const][:ineq_const_δ_COI_tpf_lower])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:ineq_const][:ineq_const_δ_COI_tpf_lower][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_δ_COI_tpf_upper)
-            println(io, "-------------------------------")
-            println(io, "Post-Fault Period - Upper Bound")
-            println(io, "-------------------------------")
-            for i in eachindex(dyn_model_dict[:ineq_const][:ineq_const_δ_COI_tpf_upper])
-                println(io, " ******* Gen $i ****** ")
-                for (j, info) in dyn_model_dict[:ineq_const][:ineq_const_δ_COI_tpf_upper][i]
-                    println(io, "$j: ", info)
-                end
-                println(io, "\n")
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_Δω_COI_tf_lower) ||
-           haskey(dyn_model_dict[:ineq_const], :ineq_const_Δω_COI_tpf_lower)
-            println(io, "============================================================")
-            println(io, "Inequality Constraints Speed Deviation in Relation to COI")
-            println(io, "============================================================")
-            if haskey(dyn_model_dict[:ineq_const], :ineq_const_Δω_COI_tf_lower)
-                println(io, "--------------------------")
-                println(io, "Fault Period - Lower Bound")
-                println(io, "--------------------------")
-                for i in eachindex(dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tf_lower])
-                    println(io, " ******* Gen $i ****** ")
-                    for (j, info) in dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tf_lower][i]
-                        println(io, "$j: ", info)
-                    end
-                    println(io, "\n")
-                end
-            end
-            if haskey(dyn_model_dict[:ineq_const], :ineq_const_Δω_COI_tf_upper)
-                println(io, "--------------------------")
-                println(io, "Fault Period - Upper Bound")
-                println(io, "--------------------------")
-                for i in eachindex(dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tf_upper])
-                    println(io, " ******* Gen $i ****** ")
-                    for (j, info) in dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tf_upper][i]
-                        println(io, "$j: ", info)
-                    end
-                    println(io, "\n")
-                end
-            end
-            if haskey(dyn_model_dict[:ineq_const], :ineq_const_Δω_COI_tpf_lower)
-                println(io, "-------------------------------")
-                println(io, "Post-Fault Period - Lower Bound")
-                println(io, "-------------------------------")
-                for i in eachindex(dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tpf_lower])
-                    println(io, " ******* Gen $i ****** ")
-                    for (j, info) in dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tpf_lower][i]
-                        println(io, "$j: ", info)
-                    end
-                    println(io, "\n")
-                end
-            end
-            if haskey(dyn_model_dict[:ineq_const], :ineq_const_Δω_COI_tpf_upper)
-                println(io, "-------------------------------")
-                println(io, "Post-Fault Period - Upper Bound")
-                println(io, "-------------------------------")
-                for i in eachindex(dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tpf_upper])
-                    println(io, " ******* Gen $i ****** ")
-                    for (j, info) in dyn_model_dict[:ineq_const][:ineq_const_Δω_COI_tpf_upper][i]
-                        println(io, "$j: ", info)
-                    end
-                    println(io, "\n")
-                end
-            end
-        end
-
-        println(io, "==========================================================")
-        println(io, "Inequality Constraints Variables - Initial Operating Point")
-        println(io, "==========================================================")
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_E_lower)
-            println(io, "------------------------------------------")
-            println(io, "Internal voltage magnitude E - Lower Bound")
-            println(io, "------------------------------------------")
-            for (i, info) in dyn_model_dict[:ineq_const][:ineq_const_E_lower] 
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_E_upper)
-            println(io, "------------------------------------------")
-            println(io, "Internal voltage magnitude E - Upper Bound")
-            println(io, "------------------------------------------")
-            for (i, info) in dyn_model_dict[:ineq_const][:ineq_const_E_upper]
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_E_fd_lower)
-            println(io, "------------------------------------------")
-            println(io, "Field voltage E_fd - Lower Bound")
-            println(io, "------------------------------------------")
-            for (i, info) in dyn_model_dict[:ineq_const][:ineq_const_E_fd_lower]
-                println(io, "$i: ", info)
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_E_fd_upper)
-            println(io, "------------------------------------------")
-            println(io, "Field voltage E_fd - Upper Bound")
-            println(io, "------------------------------------------")
-            for (i, info) in dyn_model_dict[:ineq_const][:ineq_const_E_fd_upper]
-                println(io, "$i: ", info)
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_δ_lower)
-            println(io, "---------------------------")
-            println(io, "Rotor Angle δ - Lower Bound")
-            println(io, "---------------------------")
-            for (i, info) in dyn_model_dict[:ineq_const][:ineq_const_δ_lower]
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_δ_upper)
-            println(io, "---------------------------")
-            println(io, "Rotor Angle δ - Upper Bound")
-            println(io, "---------------------------")
-            for (i, info) in dyn_model_dict[:ineq_const][:ineq_const_δ_upper]
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_P_m_lower)
-            println(io, "----------------------------------")
-            println(io, "Mechanical Power Pm - Lower Bound")
-            println(io, "---------------------------------")
-            for (i, info) in dyn_model_dict[:ineq_const][:ineq_const_P_m_lower]
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-        if haskey(dyn_model_dict[:ineq_const], :ineq_const_P_m_upper)
-            println(io, "---------------------------------")
-            println(io, "Mechanical Power Pm - Upper Bound")
-            println(io, "---------------------------------")
-            for (i, info) in dyn_model_dict[:ineq_const][:ineq_const_P_m_upper]
-                println(io, "$i: ", info) 
-            end
-            println(io, "\n")
-        end
-
-    end
-
-    println("Dynamic Model successfully saved as TXT file in: ", path_names[:pf_TS])
-
-end
 
 # ===================================================================================
 #                  PRINT THE DUALS OF THE OPTIMIZATION PROBLEM
@@ -1909,6 +1020,20 @@ function Save_Duals_Dynamic_Model_tsred(model::Model,
     dual_Δω_COI_lower = _getdual(:dual_Δω_COI_lower)
     dual_Δω_COI_upper = _getdual(:dual_Δω_COI_upper)
 
+    # --- the other corridor conventions (only one δ family and one Δω family per run) ---
+    # These reached the CSV/XLSX exports through the registry but had no local here, so the TXT
+    # dump and the dual figures were blind to them: a `:highest_H` / `:ref_gen` run wrote no
+    # corridor section and left `Figures_Duals/` empty.
+    dual_δ_ref_lower = _getdual(:dual_δ_ref_lower)     # bound_style_δ ∈ (:highest_H, :ref_gen)
+    dual_δ_ref_upper = _getdual(:dual_δ_ref_upper)
+    dual_Δω_abs_lower = _getdual(:dual_Δω_abs_lower)   # bound_style_Δω = :abs
+    dual_Δω_abs_upper = _getdual(:dual_Δω_abs_upper)
+
+    # Reference machine behind the δ_ref family — the id that has *no* corridor row, and so no
+    # section or figure of its own below.
+    δ_ref_gen = get(get(dyn_model_dict, :meta, OrderedDict{Symbol, Any}()),
+        :δ_ref_gen_resolved, nothing)
+
     # --- variable bound duals (explicit inequalities on E, δ, P_m) --------------
     dual_LB_E = _getdual(:dual_LB_E)        # TSC-ACOPF
     dual_UB_E = _getdual(:dual_UB_E)
@@ -1949,6 +1074,12 @@ function Save_Duals_Dynamic_Model_tsred(model::Model,
     # ========== WRITE TO TXT FILE ==========
     open(joinpath(pf_ts, "dynamic_model_duals.txt"), "w") do io
         _write_solve_status_header!(io, model, "Transient-stability dual solution")
+        # Which machine the δ_ref sections are measured against. Without it the surviving
+        # [G…] labels read as an arbitrary subset — the id that is missing IS the reference.
+        if δ_ref_gen !== nothing
+            println(io, "δ corridor reference: generator $(δ_ref_gen)")
+            println(io)
+        end
 
         function write_dual_active_power(io, name, vec)
             println(io, "======================================")
@@ -2036,6 +1167,10 @@ function Save_Duals_Dynamic_Model_tsred(model::Model,
         dual_δ_COI_upper !== nothing && for (i, info) in dual_δ_COI_upper write_dual_angle_rad(io, "dual_ineq_δ_COI_upper[G$i]", info) end
         dual_Δω_COI_lower !== nothing && for (i, info) in dual_Δω_COI_lower write_dual_speed_pu(io, "dual_ineq_Δω_COI_lower[G$i]", info) end
         dual_Δω_COI_upper !== nothing && for (i, info) in dual_Δω_COI_upper write_dual_speed_pu(io, "dual_ineq_Δω_COI_upper[G$i]", info) end
+        dual_δ_ref_lower !== nothing && for (i, info) in dual_δ_ref_lower write_dual_angle_rad(io, "dual_ineq_δ_ref_lower[G$i]", info) end
+        dual_δ_ref_upper !== nothing && for (i, info) in dual_δ_ref_upper write_dual_angle_rad(io, "dual_ineq_δ_ref_upper[G$i]", info) end
+        dual_Δω_abs_lower !== nothing && for (i, info) in dual_Δω_abs_lower write_dual_speed_pu(io, "dual_ineq_Δω_abs_lower[G$i]", info) end
+        dual_Δω_abs_upper !== nothing && for (i, info) in dual_Δω_abs_upper write_dual_speed_pu(io, "dual_ineq_Δω_abs_upper[G$i]", info) end
         dual_LB_E !== nothing && write_dual_voltage_pu(io, "dual_LB_E", dual_LB_E)
         dual_UB_E !== nothing && write_dual_voltage_pu(io, "dual_UB_E", dual_UB_E)
         dual_LB_δ !== nothing && write_dual_angle_rad(io, "dual_LB_δ", dual_LB_δ)
@@ -2075,12 +1210,28 @@ function Save_Duals_Dynamic_Model_tsred(model::Model,
             csv_path = joinpath(pf_ts_duals_csv, entry.csv_file)
             if entry.layout in (GEN_INDEXED, TIME_INDEXED, TIME_INDEXED_MERGE)
                 # Flat vector → single column named after the file stem, matching the
-                # historical headers (`dual_delta_COI` in dual_delta_COI.csv, …).
+                # historical headers (`dual_delta_COI` in dual_delta_COI.csv, …), plus a
+                # leading index column so the rows are self-describing. Readers that select
+                # by name are unaffected; readers that aligned two files by row position
+                # can now check they are talking about the same units.
                 col = Symbol(first(splitext(entry.csv_file)))
-                CSV.write(csv_path, DataFrame(col => val); delim = ';')
+                df = DataFrame(col => val)
+                ids = extract_dual_entry_ids(dyn_model_dict, entry)
+                if entry.layout == GEN_INDEXED && ids !== nothing && length(ids) == length(val)
+                    insertcols!(df, 1, :Gen_ID => ids)
+                elseif entry.layout != GEN_INDEXED
+                    # Time-indexed families merge the fault and post-fault windows, so the
+                    # container keys restart mid-vector; a running row counter is the only
+                    # index that stays monotonic across the join.
+                    insertcols!(df, 1, :Index => collect(1:length(val)))
+                end
+                CSV.write(csv_path, df; delim = ';')
             else
-                # Per-generator / per-bus trajectories → one `Gen_<id>` column per key.
-                save_ordered_dict_to_csv(val, csv_path)
+                # Per-generator / per-bus trajectories → one column per key. The bus-indexed
+                # families carry bus ids, and labelling them `Gen_` (the historical default)
+                # made `dual_Pbalance.csv` read as if it were per generator.
+                prefix = entry.layout == PER_BUS_TIME_MERGE ? "Bus" : "Gen"
+                save_ordered_dict_to_csv(val, csv_path; id_prefix = prefix)
             end
             push!(written, entry.csv_file)
         end
@@ -2093,15 +1244,30 @@ function Save_Duals_Dynamic_Model_tsred(model::Model,
     # Map registry export names → keyword names expected by Save_Duals_2_Excel_tsred
     Save_Duals_2_Excel_tsred(path_names; duals_to_xlsx_kwargs(_duals, dyn_model_dict)...)
 
-    # δ-COI dual figures are gated on `save_ts_plots` like every other SVG; without the
+    # Corridor dual figures are gated on `save_ts_plots` like every other SVG; without the
     # gate a default run with Plots loaded produced figures nobody asked for, and a run
     # without Plots left `Figures_Duals/` empty.
+    #
+    # Every corridor family goes in, whichever `bound_style_δ` / `bound_style_Δω` built it:
+    # the families are mutually exclusive per run, so at most one δ entry and one Δω entry
+    # carry data and the rest are skipped inside the plotter. Feeding it only the δ-COI pair
+    # meant a machine-referenced or `:abs` run produced no dual figure at all.
     if save_ts_plots
         mkpath(pf_ts_figures_duals)
+        δ_frame = δ_ref_gen === nothing ? "ref. COI" : "ref. G$(δ_ref_gen)"
+        corridor_dual_families = [
+            (title = "δ corridor ($δ_frame) - lower", side = "lower", tag = "",        ylabel = "€/rad",
+             data = dual_δ_COI_lower === nothing ? dual_δ_ref_lower : dual_δ_COI_lower),
+            (title = "δ corridor ($δ_frame) - upper", side = "upper", tag = "",        ylabel = "€/rad",
+             data = dual_δ_COI_upper === nothing ? dual_δ_ref_upper : dual_δ_COI_upper),
+            (title = "Δω corridor - lower",           side = "lower", tag = "Domega ", ylabel = "€/p.u.",
+             data = dual_Δω_COI_lower === nothing ? dual_Δω_abs_lower : dual_Δω_COI_lower),
+            (title = "Δω corridor - upper",           side = "upper", tag = "Domega ", ylabel = "€/p.u.",
+             data = dual_Δω_COI_upper === nothing ? dual_Δω_abs_upper : dual_Δω_COI_upper),
+        ]
         invoke_save_dual_ts_constraint_svgs!(
             dyn_parameters_dict[:time][:t_window_total],
-            dual_δ_COI_lower,
-            dual_δ_COI_upper,
+            corridor_dual_families,
             pf_ts_figures_duals,
         )
     end
@@ -2109,12 +1275,14 @@ function Save_Duals_Dynamic_Model_tsred(model::Model,
 end
 
 # A helper function to convert OrderedDict{Int, Vector{Float64}} to a CSV
-function save_ordered_dict_to_csv(data_dict, filename)
+# `id_prefix` names what the keys are: "Gen" (default) for per-generator families,
+# "Bus" for the nodal ones (PER_BUS_TIME_MERGE).
+function save_ordered_dict_to_csv(data_dict, filename; id_prefix::String = "Gen")
     # Convert the dictionary to a DataFrame
     # Column names will be "Gen_1", "Gen_2", etc.
     df = DataFrame()
     for (gen_id, values) in data_dict
-        df[!, Symbol("Gen_$gen_id")] = values
+        df[!, Symbol("$(id_prefix)_$gen_id")] = values
     end
     CSV.write(filename, df; delim = ';')
 end
@@ -2195,6 +1363,25 @@ function _pacc_relative_to_coi(
         Pacc_COI[i] = (info .- ((Hi .* PaccCOI_total) ./ H_total)) ./ base_MVA
     end
     return Pacc_COI
+end
+
+"""
+    _δ_relative_to_ref(δt, δ_ref_gen) -> OrderedDict | nothing
+
+Rotor angles relative to the corridor's reference machine, in **radians**, keyed like `δt`.
+
+Returns `nothing` on the COI-referenced styles (`δ_ref_gen === nothing`), where no such frame
+exists. The reference machine's own entry is identically zero — it is `δ_ref − δ_ref` — which is
+exactly what `bound_style_δ ∈ (:highest_H, :ref_gen)` bounds the other machines against, and why
+that machine carries no corridor row of its own.
+"""
+function _δ_relative_to_ref(
+    δt::OrderedDict{Int, Vector{Float64}},
+    δ_ref_gen::Union{Nothing, Int},
+)
+    (δ_ref_gen === nothing || !haskey(δt, δ_ref_gen)) && return nothing
+    δ_ref_trace = δt[δ_ref_gen]
+    return OrderedDict{Int, Vector{Float64}}(k => v .- δ_ref_trace for (k, v) in δt)
 end
 
 """
@@ -2387,12 +1574,18 @@ function Save_Results_Dynamic_Model(model::Model,
     # ====================================
     #           SAVE FIGURES
     # ====================================
+    # Resolved δ corridor reference (`:highest_H` / `:ref_gen` only). Both the figures and the
+    # CSV writer below take it, and both derive the reference-relative angles from the same
+    # helper so `angle_rel_ref.csv` and "Delta (ref G<k>) vs time.svg" cannot drift apart.
+    δ_ref_gen = get(dyn_model_dict[:meta], :δ_ref_gen_resolved, nothing)
     if save_ts_plots
         Save_Dynamic_Results_Plots_tsred(
             t_window_total, Pmt, Pet, Qet, δt, δ_COIt, δCOIt, Δωt, Δω_COIt, ΔωCOIt,
             time_RoCoF, RoCoF, RoCoFCOI, Vke, Pacc, Pacc_COI, PaccCOI, Vpe,
             base_MVA, dyn_parameters_dict[:common][:f_syn], dyn_parameters_dict[:common][:δ_tol],
-            path_names)
+            path_names;
+            δ_ref_gen = δ_ref_gen,
+            δ_reft = _δ_relative_to_ref(δt, δ_ref_gen))
     end
     t_clear_fault = get(dyn_parameters_dict[:time], :t_clear_fault, nothing)
 
@@ -2406,7 +1599,7 @@ function Save_Results_Dynamic_Model(model::Model,
         has_governor = haskey(dyn_model_dict[:vars], :Pm_tf),
         governed_gens = haskey(dyn_model_dict[:vars], :Pm_tf) ?
             collect(Int, keys(dyn_model_dict[:vars][:Pm_tf])) : Int[],
-        δ_ref_gen = get(dyn_model_dict[:meta], :δ_ref_gen_resolved, nothing))
+        δ_ref_gen = δ_ref_gen)
 
     # Pre-fault internal EMF magnitude. `:E` exists on the classical Kron path as well as
     # on classical FULL_BUS, but the writer used to sit inside `Save_FullBus_Network_Results!`
@@ -2559,16 +1752,16 @@ function Save_Dynamic_Results_CSV_tsred(t_window_total::Vector{Float64},
     # COI-relative trajectory — is the quantity the :highest_H / :ref_gen corridors bound,
     # so it is what the corridor plots need. `nothing` on the COI-referenced styles.
     df_δ_ref = nothing
-    if δ_ref_gen !== nothing && haskey(δt, δ_ref_gen)
-        δ_ref_trace = δt[δ_ref_gen]
-        δ_ref_matrix = zeros(Float64, length(t_window_total), length(δt))
+    δ_reft = _δ_relative_to_ref(δt, δ_ref_gen)   # same helper the figures use
+    if δ_reft !== nothing
+        δ_ref_matrix = zeros(Float64, length(t_window_total), length(δ_reft))
         aux_count = 0
-        for (gen_id, values) in δt
+        for (gen_id, values) in δ_reft
             aux_count += 1
-            δ_ref_matrix[:, aux_count] = rad2deg.(values .- δ_ref_trace)
+            δ_ref_matrix[:, aux_count] = rad2deg.(values)
         end
         df_δ_ref = DataFrame(hcat(t_window_total, δ_ref_matrix),
-            vcat("t", ["G$(i)" for (i, _) in δt]))
+            vcat("t", ["G$(i)" for (i, _) in δ_reft]))
     end
 
 

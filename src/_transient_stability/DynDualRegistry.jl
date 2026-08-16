@@ -580,6 +580,33 @@ function extract_dual_entry(
     end
 end
 
+"""
+    extract_dual_entry_ids(dyn_model_dict, entry) -> Union{Nothing, Vector{Int}}
+
+Generator (or bus) ids behind a `GEN_INDEXED` family, in the same order as the
+values returned by [`extract_dual_entry`](@ref).
+
+`extract_dual_entry` flattens those containers to a bare vector, which is what the
+CSV writer used to dump — a file with no id column at all. That is safe to read only
+if every dual family covers exactly the same units in the same order, and it does
+not: on a mixed fleet `dual_Pe_init.csv` spans SG + GFM while `dual_Pe.csv` spans the
+machines alone, so aligning them by row silently attributes one unit's dual to
+another. Returns `nothing` when the family is absent.
+"""
+function extract_dual_entry_ids(
+    dyn_model_dict::OrderedDict{Symbol, Any},
+    entry::DualRegistryEntry,
+)::Union{Nothing, Vector{Int}}
+    entry.layout == GEN_INDEXED || return nothing
+    store = _constraint_store(dyn_model_dict, entry.source)
+    haskey(store, entry.key_tf) && return Int[Int(k) for k in keys(store[entry.key_tf])]
+    if bound_manifest_entry_present(dyn_model_dict, entry.key_tf)
+        ids, _ = extract_bound_manifest_duals(dyn_model_dict, entry.key_tf)
+        return Int[Int(i) for i in ids]
+    end
+    return nothing
+end
+
 # ==================================================================================
 # Public API — called from builders (register) and save layer (extract)
 # ==================================================================================

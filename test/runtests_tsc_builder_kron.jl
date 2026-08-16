@@ -113,11 +113,20 @@ end
     # the propagated bound substitutes one swing step, so its rows carry Pe and Δω terms,
     # while the box is affine in δ and δCOI alone.
     @testset "bound_style_δ selects the δ-COI constraint form" begin
+        # Bounded to THIS family's block, not to end of file. The dump continues with other
+        # families and the census, and the census lists `eq_const_Pe_tf` by name — so a
+        # slice running to EOF finds "Pe_tf" on every run and the `!occursin` check below
+        # silently stops discriminating between the two corridor forms.
+        #
+        # `_dump_family!` writes rule / "title   [N rows]" / rule, then the rows. So the
+        # block runs from its title line to the next rule line that opens another family.
         δ_coi_section(path) = begin
-            txt = read(joinpath(path, "dynamic_model_details.txt"), String)
-            i = findfirst("Inequality Constraints Angle in Relation to the COI", txt)
+            lines = readlines(joinpath(path, "dynamic_model_details.txt"))
+            i = findfirst(l -> startswith(l, "δ Corridor vs COI — Fault Period, Upper Bound"),
+                          lines)
             @test i !== nothing
-            txt[first(i):end]
+            j = findnext(l -> !isempty(l) && all(==('-'), l), lines, i + 2)
+            join(lines[i:(j === nothing ? length(lines) : j - 1)], "\n")
         end
 
         # Baseline config is :coi_box (see main_style_tsc_kron_config).
@@ -146,6 +155,38 @@ end
         # The model metadata block is printed once, at the top, and states what was built.
         header = read(joinpath(res_box.path_names[:pf_TS], "dynamic_model_details.txt"), String)
         @test occursin("bound_style_δ: coi_box", header)
+
+        # Completeness: every family the builder registered must appear in the file, and
+        # exactly once. This is the assertion whose absence let PR #28's bug live — the
+        # writer named 16 of ~90 families and nothing noticed. It cannot go stale, because
+        # the expected set is read off the model that was just built rather than listed.
+        #
+        # `_dump_family!` opens each family with "<title>   [<symbol>]   [N rows]", or with
+        # "<symbol>   [N rows]" when the family has no registered title. Matching on that
+        # line — rather than on the symbol appearing anywhere — is what makes this a real
+        # check: a bare `occursin` would pass on the census entry alone, and short symbols
+        # like `δ` occur on thousands of constraint rows.
+        lines = readlines(joinpath(res_box.path_names[:pf_TS], "dynamic_model_details.txt"))
+        printed = Set{String}()
+        for l in filter(l -> endswith(l, " rows]"), lines)
+            m = match(r"\[([^\[\]]+)\]   \[\d+ rows\]$", l)
+            push!(printed, m === nothing ? first(split(l, "   ")) : m.captures[1])
+        end
+        # Collected rather than asserted one by one, so a failure names the families that
+        # went missing instead of reporting `false`.
+        missing_families = [(store, fam)
+            for store in (:vars, :eq_const, :ineq_const)
+            for fam in keys(res_box.dyn_model_dict[store])
+            if !(String(fam) in printed)]
+        @test isempty(missing_families)
+
+        # …and the summary really is a summary: the census sits ahead of every dump.
+        i_census = findfirst(l -> startswith(l, "Census —"), lines)
+        i_vars = findfirst(l -> startswith(l, "Variables —"), lines)
+        i_eq = findfirst(l -> startswith(l, "Equality Constraints —"), lines)
+        i_ineq = findfirst(l -> startswith(l, "Inequality Constraints —"), lines)
+        @test all(!isnothing, (i_census, i_vars, i_eq, i_ineq))
+        @test i_census < i_vars < i_eq < i_ineq
     end
 
     @testset "GL gen trip — COI inertia over surviving set" begin

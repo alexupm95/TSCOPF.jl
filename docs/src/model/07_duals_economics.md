@@ -18,7 +18,7 @@ TSCOPF writes every constraint in **≤ form** for inequalities and **= 0** for 
 !!! warning "Sign convention — read this before opening a CSV"
     For an **active upper-bound** inequality coded as $(\mathrm{LHS} - \mathrm{RHS}) \leq 0$, `JuMP.dual()` returns a value **$\leq 0$**. A negative dual on $P_g \leq P_g^{\max}$ at a binding limit is correct, not a bug.
 
-    **Economic prices use the opposite sign on balance rows:** nodal LMP $\pi_k = -\lambda_k$ on active power balance. The explicit dual LP and the primal JuMP export both follow this convention. Cross-check on case9, contingency 2, before plotting rents.
+    **Balance rows are the trap, and there are two different $\lambda$.** On the **primal JuMP export** the nodal LMP is $\pi_k = +\lambda_k$: the balance is coded $P_g - P_d - \sum(\cdot) = 0$ and the Lagrangian above carries $-\lambda$, so the two minus signs cancel. On the **explicit dual LP** (`Dispatch_Dual/`) the multiplier is the negative of that, and there $\pi_k = -\lambda_k$. Both routes give the same price from opposite-signed multipliers. Cross-check on case9, contingency 2, before plotting rents.
 
 ---
 
@@ -40,12 +40,12 @@ Let $\lambda_k$ be the multiplier on balance at bus $k$, and $\underline{\eta}_g
     ```math
     \begin{equation}
     \label{eq:stationarity-pg}
-    c_g + \lambda_{k(g)} - \underline{\eta}_g + \overline{\eta}_g = 0
+    c_g - \lambda_{k(g)} - \underline{\eta}_g + \overline{\eta}_g = 0
     \end{equation}
     ```
 
 !!! note "Interpretation (LMP decomposition)"
-    Define the **economic energy price** $\pi_{k(g)} = -\lambda_{k(g)}$. Rearranging $\eqref{eq:stationarity-pg}$:
+    Define the **economic energy price** $\pi_{k(g)} = +\lambda_{k(g)}$. Rearranging $\eqref{eq:stationarity-pg}$:
 
     ```math
     \pi_{k(g)} = c_g - \underline{\eta}_g + \overline{\eta}_g .
@@ -53,7 +53,7 @@ Let $\lambda_k$ be the multiplier on balance at bus $k$, and $\underline{\eta}_g
 
     At bus $k$, $\pi_k$ is the marginal cost of serving one more MW of load: fuel cost $c_g$ at the marginal unit, plus any capacity rent $\overline{\eta}_g$ if the upper bound binds, minus any must-run subsidy $\underline{\eta}_g$ if the lower bound binds. Congestion and angle limits enter through $\lambda_k$ indirectly when they force a re-dispatch.
 
-ACOPF uses the same $\pi_k = -\lambda_k$ rule on the active balance rows from [2. Steady-state OPF](02_steady_state_opf.md). Reactive balance multipliers $\beta_k$ play the analogous role for reactive support scarcity.
+ACOPF uses the same $\pi_k = +\lambda_k$ rule on the active balance rows from [2. Steady-state OPF](02_steady_state_opf.md). Reactive balance multipliers $\beta_k$ play the analogous role for reactive support scarcity.
 
 ### Two ways to obtain steady-state duals
 
@@ -62,7 +62,7 @@ ACOPF uses the same $\pi_k = -\lambda_k$ rule on the active balance rows from [2
 | Primal JuMP duals | `RunConfig.save_duals = true` | `Dispatch/CSV_duals/`, `Dispatch_Duals.xlsx` | Default; all dispatch types |
 | Explicit dual LP | `dispatch.solve_explicit_dual = true` | `Dispatch_Dual/` | Linear ED or DCOPF only; strong-duality check |
 
-The explicit LP treats prices as decision variables and recovers the same $\pi_k = -\lambda_k$ convention when strong duality holds (`test/runtests_explicit_dual.jl`).
+The explicit LP treats prices as decision variables and recovers the same **price** when strong duality holds (`test/runtests_explicit_dual.jl`), but from a multiplier of the opposite sign: it codes stationarity as $c_g + \lambda_k = 0$ (`src/_dcopf/functions_build_DC_OPF_Dual.jl:141`), so its $\lambda_k = -c_g$ and there $\pi_k = -\lambda_k$. In short, $\lambda^{\text{explicit}}_k = -\lambda^{\text{primal}}_k$ and both give $\pi_k = c_g$ at the marginal unit.
 
 ---
 
@@ -96,7 +96,7 @@ Authoritative source: `src/_manage_outputs/DispatchDualRegistry.jl` (`STEADY_STA
 
 | XLSX sheet | Constraint family | Dual / price | Id column |
 |---|---|---|---|
-| `P_Balance` | Active nodal balance | $\lambda_k$; LMP $= -\lambda_k$ | `Bus_ID` |
+| `P_Balance` | Active nodal balance | $\lambda_k$; LMP $= +\lambda_k$ | `Bus_ID` |
 | `Q_Balance` | Reactive nodal balance | $\beta_k$ | `Bus_ID` |
 | `Pg_Lo` / `Pg_Up` | Generator P limits | $\underline{\eta}_g$ / $\overline{\eta}_g$ | `Gen_ID` |
 | `Qg_Lo` / `Qg_Up` | Generator Q limits | reactive bound multipliers | `Gen_ID` |
@@ -139,11 +139,11 @@ Governor and AVR paths add `dual_Pref_init`, `dual_gov_valve`, `dual_gov_mech`, 
 !!! tip "Example 7.1 · tracing a binding stability dual"
     Run the Kron TSC-ACOPF example from [6. The TSC-OPF, assembled](06_tsc_opf_assembled.md) with `δ_tol_deg = 120` and `save_duals = true`. After a successful solve:
 
-    1. Open `RESULTS/Results - <timestamp>/Dispatch/Dispatch_Duals.xlsx` and note $\lambda_k$ on the marginal buses (LMP $= -\lambda_k$).
+    1. Open `RESULTS/Results - <timestamp>/Dispatch/Dispatch_Duals.xlsx` and note $\lambda_k$ on the marginal buses (LMP $= +\lambda_k$, so the value should read positive and near the marginal unit's `g_cost_1`).
     2. Open `Transient_Stability/OPF_Duals_Results.xlsx` → `delta_COI_Upper_Duals`. Find generator 2 in the fault window; a non-zero entry means the upper $\delta$ corridor bound was active at that time step.
     3. Compare magnitude and sign with `Transient_Stability/CSV_duals/dual_delta_COI_upper.csv` (same registry row).
 
-    If you enable `dispatch.solve_explicit_dual = true` on a **dispatch-only** linear DCOPF of the same case, $\pi_k$ from `Dispatch_Dual/` should match $-\lambda_k$ from the primal dispatch duals on balance rows (up to solver tolerance).
+    If you enable `dispatch.solve_explicit_dual = true` on a **dispatch-only** linear DCOPF of the same case, $\pi_k$ from `Dispatch_Dual/` should match $+\lambda_k$ from the primal dispatch duals on balance rows (up to solver tolerance) — the two multipliers differ by a sign, the two prices do not.
 
 ---
 

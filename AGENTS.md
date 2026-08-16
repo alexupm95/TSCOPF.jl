@@ -85,8 +85,12 @@ when absent.
 
 2. **Dual signs.** Inequalities are built in `(LHS - RHS) ≤ 0` form, so JuMP
    returns **non-positive** duals for active constraints. Nodal prices are
-   `π_k = −λ_k` on the power-balance equalities. Check the convention on a small
-   case before trusting exported numbers.
+   `π_k = +λ_k` on the power-balance equalities: the balance is coded
+   `P_g - P_d - Σflows == 0` and JuMP's Lagrangian is `f - Σλ(LHS - RHS)`, so
+   the two minus signs cancel. The **explicit dual LP** (`Dispatch_Dual/`) uses
+   the textbook convention instead and its own λ satisfies `π_k = −λ_k`; the two
+   λ differ by a sign. Check the convention on a small case before trusting
+   exported numbers.
 
 3. **The JuMP model is dead after `run_case!` returns.** The solver backend is
    released with `empty!(model)`, so every `VariableRef` and `ConstraintRef` in

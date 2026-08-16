@@ -44,25 +44,45 @@ function Compute_and_Save_Optimal_Matrices(model::Model, path_names::OrderedDict
 
 end
 
-# Function to compute the Jacobian at the optimal solution
-function compute_optimal_jacobian(model::Model)
-    rows = Any[]
+"""
+    build_constraint_evaluator(model; features=[:Jac]) -> (evaluator, rows, x)
+
+Nonlinear evaluator for every constraint of `model` that is not a plain variable
+bound, together with the two orderings the derivative matrices are indexed by:
+
+- `rows::Vector{ConstraintRef}` — Jacobian **row** order,
+- `x::Vector{VariableRef}` — Jacobian **column** (and Hessian row/column) order.
+
+Returning the orderings is the point. The row order is an artefact of iterating
+`list_of_constraint_types` and then `all_constraints`, so without it an exported
+Jacobian can only be matched back to the model by parsing the constraint strings in
+`Jacobian_Constraint_Index.csv`. With it, `Dict(rows .=> eachindex(rows))` maps any
+`ConstraintRef` straight to its row, which is what any analysis of the KKT system
+needs.
+
+`features` is forwarded to `MOI.initialize`: `[:Jac]`, `[:Hess]`, `[:Grad, :Jac]`.
+"""
+function build_constraint_evaluator(model::Model; features::Vector{Symbol} = [:Jac])
+    rows = ConstraintRef[]
     nlp = MOI.Nonlinear.Model()
     for (F, S) in list_of_constraint_types(model)
+        F <: VariableRef && continue      # variable bounds carry their duals separately
         for ci in all_constraints(model, F, S)
-            if !(F <: VariableRef)
-                push!(rows, ci)
-                object = constraint_object(ci)
-                MOI.Nonlinear.add_constraint(nlp, object.func, object.set)
-            end
+            push!(rows, ci)
+            object = constraint_object(ci)
+            MOI.Nonlinear.add_constraint(nlp, object.func, object.set)
         end
     end
     MOI.Nonlinear.set_objective(nlp, objective_function(model))
     x = all_variables(model)
-    backend = MOI.Nonlinear.SparseReverseMode()
-    evaluator = MOI.Nonlinear.Evaluator(nlp, backend, index.(x))
-    # Initialize the Jacobian
-    MOI.initialize(evaluator, [:Jac])
+    evaluator = MOI.Nonlinear.Evaluator(nlp, MOI.Nonlinear.SparseReverseMode(), index.(x))
+    MOI.initialize(evaluator, features)
+    return evaluator, rows, x
+end
+
+# Function to compute the Jacobian at the optimal solution
+function compute_optimal_jacobian(model::Model)
+    evaluator, rows, x = build_constraint_evaluator(model; features = [:Jac])
     # Query the Jacobian structure
     sparsity = MOI.jacobian_structure(evaluator)
     I, J, V = first.(sparsity), last.(sparsity), zeros(length(sparsity))
@@ -89,22 +109,7 @@ end
 
 # Function to compute the Hessian at the optimal solution
 function compute_optimal_hessian(model::Model)
-    rows = Any[]
-    nlp = MOI.Nonlinear.Model()
-    for (F, S) in list_of_constraint_types(model)
-        for ci in all_constraints(model, F, S)
-            if !(F <: VariableRef)
-                push!(rows, ci)
-                object = constraint_object(ci)
-                MOI.Nonlinear.add_constraint(nlp, object.func, object.set)
-            end
-        end
-    end
-    MOI.Nonlinear.set_objective(nlp, objective_function(model))
-    x = all_variables(model)
-    backend = MOI.Nonlinear.SparseReverseMode()
-    evaluator = MOI.Nonlinear.Evaluator(nlp, backend, index.(x))
-    MOI.initialize(evaluator, [:Hess])
+    evaluator, rows, x = build_constraint_evaluator(model; features = [:Hess])
     hessian_sparsity = MOI.hessian_lagrangian_structure(evaluator)
     I = [i for (i, _) in hessian_sparsity]
     J = [j for (_, j) in hessian_sparsity]
@@ -117,28 +122,10 @@ end
 
 # Function to compute the Gradient at the optimal solution
 function compute_lagrangian_gradient(model::Model)
-    # 1. Setup the NLP evaluator (similar to your Jacobian function)
-    rows = Any[]
-    nlp = MOI.Nonlinear.Model()
-    for (F, S) in list_of_constraint_types(model)
-        for ci in all_constraints(model, F, S)
-            if !(F <: VariableRef)
-                push!(rows, ci)
-                object = constraint_object(ci)
-                MOI.Nonlinear.add_constraint(nlp, object.func, object.set)
-            end
-        end
-    end
-    MOI.Nonlinear.set_objective(nlp, objective_function(model))
-    
-    x_vars = all_variables(model)
+    # 1. Setup the NLP evaluator, initialized for both gradient and Jacobian
+    evaluator, rows, x_vars = build_constraint_evaluator(model; features = [:Grad, :Jac])
     x_val = value.(x_vars)
-    backend = MOI.Nonlinear.SparseReverseMode()
-    evaluator = MOI.Nonlinear.Evaluator(nlp, backend, index.(x_vars))
-    
-    # 2. Initialize for Gradient and Jacobian
-    MOI.initialize(evaluator, [:Grad, :Jac])
-    
+
     # 3. Compute Objective Gradient: ∇f(x)
     grad_f = zeros(length(x_vars))
     MOI.eval_objective_gradient(evaluator, grad_f, x_val)

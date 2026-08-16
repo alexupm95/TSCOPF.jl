@@ -1,7 +1,7 @@
 name = "TSCOPF"
 uuid = "1f9dcd41-2959-45ec-ae96-6d9d1a7be86b"
 authors = ["Alex Junior da Cunha Coelho"]
-version = "0.2.5"
+version = "0.2.6"
 
 [deps]
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
@@ -19,6 +19,7 @@ NumericIO = "6c575b1c-77cb-5640-a5dc-a54116c90507"
 PiecewiseLinearOpt = "0f51c51e-adfa-5141-8a04-d40246b8977c"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 Trapz = "592b5752-818d-11e9-1e9a-2b8ca4a44cd1"
 XLSX = "fdbf4ff8-1666-58a4-91e7-1b58723a45e0"
 
